@@ -1,0 +1,168 @@
+"""对战中的一只宝可梦：固定的配置（PokemonBuild）和随对战变化的状态（Combatant）。"""
+
+from dataclasses import dataclass, field, replace
+from typing import Literal
+
+from pogo_sim.damage import DamageSide, effective_attack
+from pogo_sim.gamemaster import GameMaster, Move, Species, StatChange
+from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
+from pogo_sim.stats import BattleStats, IVs, calculate_battle_stats, calculate_cp
+
+# Mega 没有指定 Mega 等级时的默认值：有 supermega 标签的是 4，其他是 3。
+# 来源：PvPoke Pokemon.js 第 63、146 行。状态：参考 PvPoke。
+DEFAULT_MEGA_LEVEL = 3
+DEFAULT_SUPERMEGA_LEVEL = 4
+
+# 脱壳忍者的 HP 固定为 10，与等级和 IV 无关。来源：Pokemon.js initialize（dex 292）。状态：参考 PvPoke。
+SHEDINJA_DEX = 292
+SHEDINJA_HP = 10
+
+
+@dataclass(frozen=True)
+class PokemonBuild:
+    """一只宝可梦的配置：种类、等级、IV、招式。对战开始前就确定，对战中不变。"""
+
+    species_id: str
+    level: float
+    ivs: IVs
+    fast_move_id: str
+    charged_move_ids: tuple[str, ...]  # 1 到 3 个；第三个只有 Mega 能带
+    mega_level: int | None = None  # 只对 Mega 有意义；不填则用默认值
+
+
+FaintSource = Literal["fast", "charged"]
+
+
+@dataclass
+class Combatant:
+    """对战中的一只宝可梦。
+
+    前半部分字段是固定数据，后半部分是对战状态。状态只由 battle 模块修改；
+    策略（policy）只读，不要在策略里改这里的值。
+    """
+
+    # ---- 固定数据 ----
+    index: int  # 0 或 1
+    build: PokemonBuild
+    species: Species
+    stats: BattleStats  # stats.hp 是最大 HP
+    cp: int
+    fast_move: Move
+    charged_moves: tuple[Move, ...]
+    mega_level: int | None  # 非 Mega 为 None
+
+    # ---- 对战状态 ----
+    hp: int
+    shields: int
+    energy: int = 0
+    cooldown: int = 0  # 还要等几个回合才能再行动；0 表示本回合可以决定行动
+    atk_stage: int = 0
+    def_stage: int = 0
+    fainted_by: FaintSource | None = None  # 被快招还是大招打倒（影响同回合其他行动是否有效）
+
+    # 概率性能力变化的计数器，键是招式 ID（只给大招建，PvPoke 也是这样）。见 battle._roll_effect。
+    chance_meters: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        return self.species.name
+
+    @property
+    def is_shadow(self) -> bool:
+        return self.species.is_shadow
+
+    @property
+    def is_fainted(self) -> bool:
+        return self.hp <= 0
+
+    def damage_side(self) -> DamageSide:
+        """当前状态下计算伤害需要的数据。"""
+        return DamageSide(
+            types=self.species.types,
+            stats=self.stats,
+            is_shadow=self.is_shadow,
+            atk_stage=self.atk_stage,
+            def_stage=self.def_stage,
+            mega_level=self.mega_level,
+        )
+
+    def cmp_attack(self, rules: BattleRules) -> float:
+        """CMP（同回合放大招谁先手）比较用的攻击。"""
+        if rules.cmp_uses_raw_attack:
+            return self.stats.atk
+        return effective_attack(self.damage_side(), rules)
+
+    def apply_stat_change(self, change: StatChange, rules: BattleRules) -> None:
+        """叠加能力等级变化，并限制在 ±max_stat_stage 之内。"""
+        limit = rules.max_stat_stage
+        self.atk_stage = max(-limit, min(limit, self.atk_stage + change.atk))
+        self.def_stage = max(-limit, min(limit, self.def_stage + change.def_))
+
+
+def initial_chance_meter(chance: float) -> float:
+    """PvPoke 计数器的初始值：等于概率本身；50% 的招式例外，从 0 开始。
+
+    效果：12.5% 的招第 7 次使用时触发（0.125 × 8 = 1）；50% 的招第 2 次触发。
+    来源：Pokemon.js resetMoves（第 740–746 行）。状态：参考 PvPoke（PvPoke 的简化，不是游戏机制）。
+    """
+    return 0.0 if chance == 0.5 else chance
+
+
+def make_combatant(
+    gm: GameMaster,
+    build: PokemonBuild,
+    index: int,
+    shields: int,
+    rules: BattleRules = PVPOKE_COMPAT,
+) -> Combatant:
+    """按配置建立对战开始时的状态（满 HP、0 能量、0 能力等级）。"""
+    species = gm.get_species(build.species_id)
+    fast_move = gm.get_move(build.fast_move_id)
+    charged_moves = tuple(gm.get_move(move_id) for move_id in build.charged_move_ids)
+
+    if not fast_move.is_fast:
+        raise ValueError(f"{fast_move.move_id} 不是快速技能")
+    for move in charged_moves:
+        if move.is_fast:
+            raise ValueError(f"{move.move_id} 不是大招")
+    max_charged = 3 if species.is_mega else 2
+    if not 1 <= len(charged_moves) <= max_charged:
+        raise ValueError(
+            f"{species.species_id} 只能带 1 到 {max_charged} 个大招，得到 {len(charged_moves)} 个"
+        )
+    if not 0 <= shields <= rules.max_shields:
+        raise ValueError(f"盾数必须是 0 到 {rules.max_shields}，得到 {shields}")
+
+    mega_level = None
+    if species.is_mega:
+        if build.mega_level is not None:
+            mega_level = build.mega_level
+        elif "supermega" in species.tags:
+            mega_level = DEFAULT_SUPERMEGA_LEVEL
+        else:
+            mega_level = DEFAULT_MEGA_LEVEL
+    elif build.mega_level is not None:
+        raise ValueError(f"{species.species_id} 不是 Mega，不能指定 Mega 等级")
+
+    stats = calculate_battle_stats(species.base_stats, build.ivs, build.level)
+    if species.dex == SHEDINJA_DEX:
+        stats = replace(stats, hp=SHEDINJA_HP)
+    chance_meters = {
+        move.move_id: initial_chance_meter(move.effect.chance)
+        for move in charged_moves
+        if move.effect is not None and move.effect.chance < 1
+    }
+
+    return Combatant(
+        index=index,
+        build=build,
+        species=species,
+        stats=stats,
+        cp=calculate_cp(species.base_stats, build.ivs, build.level),
+        fast_move=fast_move,
+        charged_moves=charged_moves,
+        mega_level=mega_level,
+        hp=stats.hp,
+        shields=shields,
+        chance_meters=chance_meters,
+    )

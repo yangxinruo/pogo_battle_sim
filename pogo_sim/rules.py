@@ -2,11 +2,11 @@
 
 所有会影响结算的数值和开关都集中在 BattleRules 里，引擎各处只从这里取值。
 每一项都注明来源和验证状态（含义见 docs/mechanics.md 开头）。
-
-目前只有伤害层（第 3a 步）用到的参数；回合时序的开关（docs/mechanics.md 9.3）在 3b 加入。
+开关的默认值都是"与 PvPoke 一致"，其他选项对应 docs/mechanics.md 9.3。
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,42 @@ class BattleRules:
     # 来源：gamemaster settings.maxBuffStages / buffDivisor。状态：参考 PvPoke，与 CLAUDE.md 一致。
     max_stat_stage: int = 4  # 攻击和防御各自 −4 到 +4 级
     stat_stage_divisor: int = 4  # 倍率：s > 0 时 (4 + s) / 4；s ≤ 0 时 4 / (4 − s)
+
+    # ---- 能量与盾（docs/mechanics.md 4、6.1）----
+    # 来源：PvPoke Battle.js useMove、Player.js。状态：参考 PvPoke。
+    max_energy: int = 100
+    max_shields: int = 2
+    shielded_damage: int = 1  # 被盾挡下的大招造成的伤害
+
+    # ---- 时间（docs/mechanics.md 5.1、6.5）----
+    # 引擎以回合为单位（1 回合 = 0.5 秒）。下面两项只用于判断 240 秒时限。
+    # PvPoke 把每次大招折算成 10 秒（大招小游戏的时长）计入对战时间，同回合的第二个大招再加 10 秒。
+    # 来源：Battle.js step() 末尾和 useMove() 里对 time 的累加。
+    # 状态：大招期间计时继续走——已验证（用户实战经验）；每次计 10 秒——参考 PvPoke。
+    turn_ms: int = 500
+    charged_move_ms: int = 10000
+    time_limit_ms: int = 240000  # 对战时间超过这个值就结束（PvPoke：time > 240000）
+
+    # ---- 机制开关（docs/mechanics.md 9.3）----
+    # 同回合双方都放大招、且比较用的攻击相等时怎么办。
+    #   "both_fire"：没有先后，双方大招都生效，即使被打倒（PvPoke）
+    #   "random"：随机决定先后，后手被打倒则不生效（用户印象中的游戏行为，Q8，待确认）
+    cmp_tie: Literal["both_fire", "random"] = "both_fire"
+
+    # CMP 比较哪个攻击。
+    #   True：不含暗影加成、不含能力等级的攻击，即 CPM × (种族值 + IV)（PvPoke）
+    #   False：含暗影和能力等级的有效攻击（Q8，待确认）
+    cmp_uses_raw_attack: bool = True
+
+    # 被盾挡下的大招，对对手的能力变化是否仍然生效（Q6，待确认）。
+    # PvPoke：生效。对自己的能力变化（如 Close Combat 降自己防御）不受影响，总是生效。
+    opponent_effects_apply_when_shielded: bool = True
+
+    # 概率性能力变化（如 Night Slash 12.5% 提升攻击）怎么决定是否触发（Q7）。
+    #   "pvpoke_counter"：PvPoke 的确定性计数器，每用一次累加概率，跨过整数时触发
+    #   "random"：按概率随机（需要给对战一个随机种子才能复现）
+    # 剧本策略可以逐次指定是否触发，此时不看这个开关。
+    chance_effects: Literal["pvpoke_counter", "random"] = "pvpoke_counter"
 
 
 # 与 PvPoke 行为一致的默认规则。回归测试都用它。
