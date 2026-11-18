@@ -138,3 +138,13 @@ def test_highest_level_under_cp_edge_cases(gm: GameMaster) -> None:
         highest_level_under_cp(mewtwo.base_stats, IVs(15, 15, 15), 10000, level_cap=40)
         == 40.0
     )
+
+
+def test_cpm_table_matches_pvpoke() -> None:
+    """CPM 表逐位等于 PvPoke Pokemon.js 里的值（1 到 55 级）。"""
+    from tests.pvpoke_reference import load_damage_reference
+
+    reference = load_damage_reference()["cpm"]
+    assert len(reference) == len(CPM_TABLE)
+    for level, value in reference:
+        assert get_cpm(level) == value, level

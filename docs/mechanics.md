@@ -105,7 +105,8 @@ CP = max(floor((攻+IV) × sqrt(防+IV) × sqrt(HP+IV) × CPM² / 10), 10)
 伤害 = floor(0.5 × 威力 × (攻击/防御) × STAB × 克制倍率 × PvP加成 × [Mega招式加成] × [蓄力比例]) + 1
 ```
 - 来源：`battle/DamageCalculator.js` `damage`（第 68 行）。
-- 状态：**参考 PvPoke**，公式本身与社区公认一致。
+- 状态：**参考 PvPoke**，公式本身与社区公认一致。实现在 `pogo_sim/damage.py`，已用 PvPoke 源码逐位核对（见 3.6）。
+- 乘法顺序照搬 PvPoke：`威力 × STAB × (攻/防) × 克制 × 蓄力 × Mega加成 × 0.5 × PvP加成`。浮点乘法不满足结合律，理论上换顺序可能在取整边界上差 1；实际搜索 40 万个随机组合没有找到这样的例子，但仍保持一致。
 
 ### 3.2 各倍率
 | 倍率 | PvPoke 的值 | 说明 |
@@ -125,9 +126,11 @@ CP = max(floor((攻+IV) × sqrt(防+IV) × sqrt(HP+IV) × CPM² / 10), 10)
 
 ### 3.3 攻击和防御用什么值
 ```
-有效攻击 = 攻击 × 能力等级倍率 × 暗影攻击倍率
-有效防御 = 防御 × 能力等级倍率 × 暗影防御倍率
+有效攻击 = 攻击 × (能力等级倍率 × 暗影攻击倍率)
+有效防御 = 防御 × (能力等级倍率 × 暗影防御倍率)
 ```
+（PvPoke 先把两个倍率相乘，再乘到能力值上。）
+- 暗影宝可梦在 gamemaster 里是单独的条目（如 `azumarill_shadow`，带 `shadow` 标签），PvPoke 据标签设置暗影倍率（`Pokemon.js` 第 406 行）。
 - 来源：`Pokemon.js` `getEffectiveStat`（第 2091 行）。
 - 状态：**参考 PvPoke**。
 
@@ -138,6 +141,16 @@ CP = max(floor((攻+IV) × sqrt(防+IV) × sqrt(HP+IV) × CPM² / 10), 10)
 ### 3.5 蓄力比例
 - 模拟模式固定为 1（满蓄力）。只有训练对战里玩家手动蓄力时才小于 1。
 - 我们的引擎可以先固定为 1，留一个参数。
+
+### 3.6 与 PvPoke 源码的核对
+`tools/pvpoke_ref/` 在 Node 里运行 PvPoke 源码（commit `d02018e`），生成 `tests/fixtures/pvpoke_damage_reference.json`：
+- CPM 表 109 项、属性克制 3078 项（18 种招式属性 × 171 种防守属性组合）：逐位相同。
+- 伤害用例 428 个（28 个手挑 + 400 个随机）：CP、有效攻防、克制倍率、STAB、最终伤害全部逐位相同。
+- 手挑用例覆盖：双重弱点/抵抗、免疫、免疫×弱点、暗影攻守、能力等级 ±4、Mega 等级 1–4、威力 0、51 级。
+- 其中 4 个是"float32 边界"用例：如果把 1.3 / 1.2 / 1.6 换成精确值，这 4 个的伤害会差 1，说明照搬 float32 常数确实有影响。
+- 反向检查：故意改错暗影倍率、能力等级公式、STAB、Mega 加成，分别有 190、253、171、3 个用例失败，说明这套用例能发现这类错误。
+
+暂不支持（形态变化留到以后）：Gulp Missile（按对手最大 HP 百分比算伤害）、Aegislash 等 11 个有形态变化的宝可梦的特殊规则。
 
 ---
 
@@ -272,7 +285,9 @@ PvPoke 目前的做法（都是 **参考 PvPoke**，其中多项它自己也说�
 
 - gamemaster 里 Mega 有 `mega` 标签（64 只），其中 19 只还有 `supermega` 标签。
 - **Mega 等级**：默认 3；有 `supermega` 标签的默认 4（`Pokemon.js` 第 63、146 行）。
-- **第三个大招**：所有 Mega 都可以带（`hasThirdChargedMove`）。额外招式在 `extraChargedMoves` 里，是带 "+" 的专属招式（如 `DYNAMIC_PUNCH_PLUS`），共 18 个，标记 `isMegaMove`。
+- **第三个大招**：所有 Mega 都可以带（`hasThirdChargedMove`）。额外招式在 `extraChargedMoves` 里，是带 "+" 的专属招式（如 `DYNAMIC_PUNCH_PLUS`）。
+  - "+" 招式共 19 个，其中 18 个标记了 `isMegaMove`；**`MOONBLAST_PLUS`（Mega 皮可西）没有标记**，所以 PvPoke 不给它 Mega 加成。疑似 PvPoke 数据遗漏，见 9.2。
+  - `extraChargedMoves` 里还有 Cramorant 的 Gulp Missile（形态机制，不是第三个大招）。所以"能带第三个大招"要按"是 Mega 且有 `extraChargedMoves`"判断。
 - **Mega 招式加成**：`isMegaMove` 的招式伤害乘以 1 / 1.1 / 1.2 / 1.3，对应 Mega 等级 1–4（`DamageCalculator.js` 第 10、41 行）。依据是 PvPoke 2026-09-01 的更新说明 "Mega Move Update"。
 - **Mega 等级 4 的等级上限**：等级上限从 50 提到 52（`Pokemon.js` 第 294 行，2026-09-02 提交 "Mega Level 4 CP Boost"）。
 - **CP 超上限的 Mega**：PvPoke 直接按 `defaultIVs` 用一个很低的等级（例如 Mega 超梦X 在 1500 联盟是 9 级），当成普通的低等级宝可梦处理。
@@ -429,6 +444,9 @@ PvPoke 是生效（例如 Icy Wind 被挡仍降攻）。我的了解也是生效
 
 **Q12. 长快招被大招打断后，剩余时长是否作废？**（上次问得不清楚，重述）
 例子：对手用 4 回合的快招，刚出手 1 回合，我放了大招。PvPoke 的处理是：这个快招在大招结束后（空回合 T+1）立刻结算，对手在 T+2 就能出下一招——剩下的 2 回合不用等了。另一种可能是大招结束后对手还要把剩下的回合走完，快招才打出来。新系统下是哪种，官方没说。先按 PvPoke 做。
+
+**Moonblast+ 是否吃 Mega 等级加成？**（2026-11-18 新发现）
+19 个 "+" 招式里只有 `MOONBLAST_PLUS` 在 PvPoke 数据里没有 `isMegaMove` 标记，PvPoke 因此不给它加成（Mega 等级 4 时少算 30%）。其他 18 个都有。看起来是 PvPoke 漏标了。现在按 PvPoke 数据实现（不加成）；如果游戏里它也吃加成，以后在自定义覆盖文件里补上标记即可。
 
 **Mega 削弱的准确门槛。**
 只能确定在 5425–6039 之间，暂取 6000。等出现 CP 落在这个区间的新 Mega 时再定。
