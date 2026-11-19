@@ -26,8 +26,11 @@ class PokemonBuild:
     level: float
     ivs: IVs
     fast_move_id: str
-    charged_move_ids: tuple[str, ...]  # 1 到 3 个；第三个只有 Mega 能带
+    charged_move_ids: tuple[str, ...]  # 1 到 3 个；第三个只有 Mega 能带（见 make_combatant）
     mega_level: int | None = None  # 只对 Mega 有意义；不填则用默认值
+    # 这个配置是怎么选出来的，每条一句（例如等级上限、IV 排名、为什么降等级），只用于日志。
+    # 不参与相等比较：说明不同、数值相同的两个配置算同一个。见 season.season_build。
+    notes: tuple[str, ...] = field(default=(), compare=False)
 
 
 FaintSource = Literal["fast", "charged"]
@@ -138,6 +141,46 @@ def initial_chance_meter(chance: float) -> float:
     return 0.0 if chance == 0.5 else chance
 
 
+def resolve_mega_level(species: Species, mega_level: int | None) -> int | None:
+    """实际使用的 Mega 等级：非 Mega 为 None；Mega 没指定时用默认值（supermega 是 4，其他是 3）。"""
+    if not species.is_mega:
+        if mega_level is not None:
+            raise ValueError(f"{species.species_id} 不是 Mega，不能指定 Mega 等级")
+        return None
+    if mega_level is not None:
+        return mega_level
+    if "supermega" in species.tags:
+        return DEFAULT_SUPERMEGA_LEVEL
+    return DEFAULT_MEGA_LEVEL
+
+
+def check_charged_moves(species: Species, charged_moves: tuple[Move, ...]) -> None:
+    """大招数量：1 到 2 个；第三个只有带 extraChargedMoves 的 Mega 能带，而且只能从里面选。
+
+    来源：用户确认（docs/mechanics.md 9.1 Q10）。gamemaster 里 64 只 Mega 中有 19 只有
+    extraChargedMoves（都是 supermega）；可乐鸟也有 extraChargedMoves，但那是形态机制，不是第三个大招。
+    """
+    for move in charged_moves:
+        if move.is_fast:
+            raise ValueError(f"{move.move_id} 不是大招")
+    if not 1 <= len(charged_moves) <= 3:
+        raise ValueError(
+            f"{species.species_id} 只能带 1 到 3 个大招，得到 {len(charged_moves)} 个"
+        )
+    if len(charged_moves) < 3:
+        return
+    if not (species.is_mega and species.extra_charged_move_ids):
+        raise ValueError(
+            f"{species.species_id} 不能带第三个大招：只有带 extraChargedMoves 的 Mega 可以"
+        )
+    third = charged_moves[2].move_id
+    if third not in species.extra_charged_move_ids:
+        allowed = "、".join(species.extra_charged_move_ids)
+        raise ValueError(
+            f"{species.species_id} 的第三个大招只能从 extraChargedMoves 里选（{allowed}），得到 {third}"
+        )
+
+
 def make_combatant(
     gm: GameMaster,
     build: PokemonBuild,
@@ -152,27 +195,11 @@ def make_combatant(
 
     if not fast_move.is_fast:
         raise ValueError(f"{fast_move.move_id} 不是快速技能")
-    for move in charged_moves:
-        if move.is_fast:
-            raise ValueError(f"{move.move_id} 不是大招")
-    max_charged = 3 if species.is_mega else 2
-    if not 1 <= len(charged_moves) <= max_charged:
-        raise ValueError(
-            f"{species.species_id} 只能带 1 到 {max_charged} 个大招，得到 {len(charged_moves)} 个"
-        )
+    check_charged_moves(species, charged_moves)
     if not 0 <= shields <= rules.max_shields:
         raise ValueError(f"盾数必须是 0 到 {rules.max_shields}，得到 {shields}")
 
-    mega_level = None
-    if species.is_mega:
-        if build.mega_level is not None:
-            mega_level = build.mega_level
-        elif "supermega" in species.tags:
-            mega_level = DEFAULT_SUPERMEGA_LEVEL
-        else:
-            mega_level = DEFAULT_MEGA_LEVEL
-    elif build.mega_level is not None:
-        raise ValueError(f"{species.species_id} 不是 Mega，不能指定 Mega 等级")
+    mega_level = resolve_mega_level(species, build.mega_level)
 
     stats = calculate_battle_stats(species.base_stats, build.ivs, build.level)
     if species.dex == SHEDINJA_DEX:

@@ -323,6 +323,30 @@ PvPoke 目前的做法（都是 **参考 PvPoke**，其中多项它自己也说�
 - **每队只能带 1 只 Mega**（正作基本也只允许一只）。3v3 组队时检查。
 - 等级上限的几种赛季规则（固定 52、Mega 后 55、普通上限 + 挚友 + 2）**对所有 Mega 等级都生效，大师联盟也适用**。PvPoke 当前的做法不同：只有 Mega 等级 4 是 52，大师联盟仍是 50（`Pokemon.js` 第 294 行；`interface/PokeSelect.js` 第 347 行把 Mega 等级 4 的原形等级算作"Mega 等级 − 2"，说明它的 52 是"基础上限 50 + 2"）。
 
+本项目的实现（第 2c 步，`pogo_sim/season.py`）：
+- **赛季规则 `SeasonRules`**：普通等级上限（50）、挚友加成（1）、Mega 等级上限规则、CP 超上限的 Mega 是否自动降等级、每队最多几只 Mega（1）。
+- **Mega 等级上限 `MegaLevelCap`**：要么直接指定上限（`fixed`），要么"普通上限 + 挚友加成 + `extra_levels`"；可以限定只对 Mega 等级 ≥ 某值生效、大师联盟是否适用。预设：
+
+  | 预设 | 规则 | Mega 超梦X 在大师联盟（挚友） |
+  |---|---|---|
+  | `PVPOKE_SEASON`（默认） | Mega 等级 4 固定 52，大师联盟除外 | 51（挚友，按普通规则） |
+  | `MEGA_CAP_52` | 所有 Mega 固定 52 | 52 |
+  | `MEGA_CAP_55` | 所有 Mega 固定 55 | 55 |
+  | `MEGA_PLUS_2` | 所有 Mega 为普通上限 + 2 | 53 |
+
+  固定上限时挚友加成不另加。这里只管"上限"：不指定等级时，配置默认取上限内 CP 合法的最高等级，所以"上限 55"和"自动提到 55"在默认设置下结果一样。
+- **按赛季建立配置 `season_build`**：不指定 IV 时用 IV 排名第 1（第 11 节）；不指定等级时用上限内 CP 合法的最高等级。CP 超上限的 Mega 自动降到合法的最高等级，不看 `levelFloor`、从 1 级起找（9.1）；普通宝可梦指定的等级超过 CP 上限时报错。怎么选出来的写在 `PokemonBuild.notes` 里，例如 Mega 雪妖女在超级联盟：
+
+  ```
+  赛季规则：PvPoke 兼容；超级联盟
+  Mega 等级 4（默认）
+  Mega 等级上限 52（适用条件：只限 Mega 等级 ≥ 4，大师联盟除外）
+  IV 4/15/15：超级联盟 IV 排名第 1（能力值乘积最大；IV 下限 0，共 4096 个组合）
+  等级 14.5：52 级时 CP 4187 超过 1500，自动降到 CP 不超过上限的最高等级（CP 1498）
+  ```
+- **第三个大招**：`make_combatant` 检查，只有带 `extraChargedMoves` 的 Mega 能带，而且第三个只能从 `extraChargedMoves` 里选（前两个不检查招式池，和以前一样）。gamemaster 里 64 只 Mega 中 19 只有（都是 supermega），其余 45 只现在最多两个大招。
+- **每队 Mega 数**：`check_team` 检查，3v3 时用。
+
 ---
 
 ## 8. PvPoke 的 AI 策略
@@ -522,7 +546,9 @@ PvPoke 是生效（例如 Icy Wind 被挡仍降攻）。我的了解也是生效
 | 挡盾后削弱 | 生效 | 不生效 | 已实现：`BattleRules.opponent_effects_apply_when_shielded` |
 | 被打断快招的剩余时长 | 作废 | 走完 | 只有默认行为；"走完"还没做 |
 | Mega 削弱门槛 | 6000 | 任意值 | 已实现：`conversion.MEGA_NERF` |
-| Mega 等级上限 | 52（PvPoke 当前值） | 按赛季配置 | 路线图第 2 步 |
+| Mega 等级上限 | 只有 Mega 等级 4 是 52，大师联盟 50（`PVPOKE_SEASON`） | 固定 52、提到 55、普通上限 + 2，或自己组合 | 已实现：`season.SeasonRules.mega_level_cap`（见第 7 节） |
+| CP 超上限的 Mega | 自动降等级，不看 `levelFloor` | 和普通宝可梦一样，本身等级要合法 | 已实现：`SeasonRules.mega_auto_downlevel` |
+| 每队 Mega 数 | 1 | 任意或不限 | 已实现：`SeasonRules.max_megas_per_team`，`season.check_team` 检查 |
 
 非默认选项只有单项测试（`tests/test_battle.py`），没有和游戏实测对照过。
 

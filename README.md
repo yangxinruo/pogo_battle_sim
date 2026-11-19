@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，并给 IV 组合排名。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，并按赛季规则（含 Mega 等级上限）建立配置。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -10,6 +10,7 @@
   - `cpm.py`：等级与 CP 倍率（CPM）表
   - `stats.py`：IV、CP、HP、实际攻防
   - `iv_ranking.py`：联盟 CP 上限下的 IV 排名（按能力值乘积）
+  - `season.py`：赛季规则（等级上限、Mega 等级上限、Mega 降等级、每队 Mega 数）和按规则建立配置的 `season_build`
   - `conversion.py`：正作六项能力值 → GO 种族值
   - `gamemaster.py`：读取 PvPoke gamemaster.json，并合并覆盖文件
   - `custom.py`：自定义覆盖文件（新宝可梦、新招式、修改已有条目）
@@ -117,6 +118,26 @@ print(find_rank(ranking, IVs(15, 15, 15)).describe())  # IV 15/15/15，13.5 级�
 ```
 
 做法和默认的 IV 下限见 [docs/mechanics.md](docs/mechanics.md) 第 11 节。
+
+## 按赛季规则建立配置
+
+```python
+from pogo_sim.season import MEGA_PLUS_2, season_build
+
+# 默认 PvPoke 兼容规则；不指定 IV 和等级时用 IV 排名第 1、合法的最高等级
+build = season_build(gm, "froslass_mega", 1500, "POWDER_SNOW", ["AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"])
+print("\n".join(build.notes))
+# 赛季规则：PvPoke 兼容；超级联盟
+# Mega 等级 4（默认）
+# Mega 等级上限 52（适用条件：只限 Mega 等级 ≥ 4，大师联盟除外）
+# IV 4/15/15：超级联盟 IV 排名第 1（能力值乘积最大；IV 下限 0，共 4096 个组合）
+# 等级 14.5：52 级时 CP 4187 超过 1500，自动降到 CP 不超过上限的最高等级（CP 1498）
+
+# 其他赛季规则、挚友、指定 IV / 等级 / Mega 等级
+build = season_build(gm, "froslass_mega", 10000, "POWDER_SNOW", ["AVALANCHE"], season=MEGA_PLUS_2, best_buddy=True)
+```
+
+预设和各项规则见 [docs/mechanics.md](docs/mechanics.md) 第 7 节。
 
 ## PvPoke 参考数据
 
