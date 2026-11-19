@@ -32,6 +32,36 @@ class PokemonBuild:
 
 FaintSource = Literal["fast", "charged"]
 
+# 没有 CP 上限的联盟（大师联盟）。PvPoke 用 10000 表示。
+UNCAPPED_CP = 10000
+UNCAPPED_LEVEL = 50.0
+
+
+def league_build(
+    gm: GameMaster,
+    species_id: str,
+    cp_limit: int,
+    fast_move_id: str,
+    charged_move_ids: tuple[str, ...],
+    mega_level: int | None = None,
+) -> PokemonBuild:
+    """用 PvPoke 的联盟默认等级和 IV 建立配置。
+
+    有 CP 上限的联盟（500 / 1500 / 2500）：gamemaster 的 defaultIVs；
+    大师联盟（10000）：50 级、15/15/15。
+    状态：参考 PvPoke（这是 PvPoke 的默认选择，不是游戏规则）；
+    已与 PvPoke 对战参考数据里全部 20 个配置核对一致（tests/test_battle_pvpoke.py）。
+    """
+    species = gm.get_species(species_id)
+    if cp_limit >= UNCAPPED_CP:
+        level, ivs = UNCAPPED_LEVEL, IVs(15, 15, 15)
+    elif cp_limit in species.default_spreads:
+        spread = species.default_spreads[cp_limit]
+        level, ivs = spread.level, spread.ivs
+    else:
+        raise ValueError(f"gamemaster 里没有 {species_id} 在 CP {cp_limit} 的默认配置")
+    return PokemonBuild(species_id, level, ivs, fast_move_id, tuple(charged_move_ids), mega_level)
+
 
 @dataclass
 class Combatant:

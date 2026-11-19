@@ -12,6 +12,7 @@ from typing import Protocol
 
 from pogo_sim.combatant import Combatant
 from pogo_sim.gamemaster import Move
+from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
 
 
 @dataclass(frozen=True)
@@ -49,11 +50,16 @@ class ShieldDecision:
 
 @dataclass(frozen=True)
 class BattleView:
-    """策略做决定时能看到的信息。me / opponent 是对战状态本身，只读，不要修改。"""
+    """策略做决定时能看到的信息。me / opponent 是对战状态本身，只读，不要修改。
+
+    双方的全部状态都看得见（HP、能量、盾数、冷却）——和 PvPoke 一样假设完全信息。
+    rules 是引擎正在用的规则，策略估算伤害时要用同一套。
+    """
 
     turn: int
     me: Combatant
     opponent: Combatant
+    rules: BattleRules = PVPOKE_COMPAT
 
 
 class Policy(Protocol):

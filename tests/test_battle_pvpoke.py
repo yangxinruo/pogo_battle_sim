@@ -7,7 +7,7 @@
 import pytest
 
 from pogo_sim.battle import Battle, BattleResult
-from pogo_sim.combatant import Combatant, PokemonBuild, make_combatant
+from pogo_sim.combatant import Combatant, PokemonBuild, league_build, make_combatant
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
 from pogo_sim.policy import ScriptedCharged, ScriptedPolicy
 from pogo_sim.stats import IVs
@@ -117,3 +117,12 @@ def test_moves_and_result_match_pvpoke(gm: GameMaster, battle: dict) -> None:
     assert list(result.ratings) == battle["result"]["ratings"]
     assert result.turns == battle["result"]["turns"]
     assert result.elapsed_ms == battle["result"]["duration_ms"]
+
+
+def test_league_build_matches_pvpoke_defaults(gm: GameMaster) -> None:
+    """league_build() 给出的等级和 IV，与 PvPoke 在各联盟的默认值相同。"""
+    for battle in BATTLES:
+        for spec in battle["pokemon"]:
+            build = league_build(gm, spec["species"], battle["cp"], spec["fast"], tuple(spec["charged"]))
+            ivs = [build.ivs.atk, build.ivs.def_, build.ivs.hp]
+            assert (build.level, ivs) == (spec["level"], spec["ivs"]), spec["species"]

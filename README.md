@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎的规则部分已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；目前只有"按剧本出招"的策略，自己做决定的策略在下一步。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -16,10 +16,12 @@
   - `damage.py`：伤害公式
   - `combatant.py`：对战中的一只宝可梦（配置 `PokemonBuild` 和对战状态 `Combatant`）
   - `policy.py`：策略接口（出什么招、开不开盾）和剧本策略 `ScriptedPolicy`
+  - `simple_policy.py`：简单规则策略 `SimplePolicy`（规则和参数见文件开头）
   - `battle.py`：1v1 回合结算引擎
   - `timeline.py`：时间线事件、逐回合快照、文字日志
 - `tests/`：pytest 测试；`tests/fixtures/` 是用 PvPoke 源码生成的参考数据
 - `tools/pvpoke_ref/`：在 Node 里运行 PvPoke 源码、生成参考数据的脚本
+- `tools/compare_simple_policy.py`：简单规则策略与 PvPoke AI 的比较（`.venv/bin/python -m tools.compare_simple_policy`）
 - `data/`：PvPoke gamemaster.json 快照（来源见 `data/SOURCE.md`）
 - `docs/`：机制规格文档
 
@@ -34,6 +36,27 @@ python3 -m venv .venv
 ```
 
 ## 跑一场对战
+
+用简单规则策略（等级和 IV 用 PvPoke 的联盟默认值）：
+
+```python
+from pogo_sim.battle import Battle
+from pogo_sim.combatant import league_build, make_combatant
+from pogo_sim.gamemaster import load_gamemaster
+from pogo_sim.simple_policy import SimplePolicy, SimplePolicyConfig
+from pogo_sim.timeline import format_timeline
+
+gm = load_gamemaster()
+azumarill = make_combatant(gm, league_build(gm, "azumarill", 1500, "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), 0, shields=2)
+medicham = make_combatant(gm, league_build(gm, "medicham", 1500, "COUNTER", ("ICE_PUNCH", "PSYCHIC")), 1, shields=2)
+
+no_bait = SimplePolicyConfig(bait_shields=False)  # 每个规则都可以单独调
+result = Battle((azumarill, medicham), (SimplePolicy(), SimplePolicy(no_bait))).run()
+print(result)
+print(format_timeline(result.events, (azumarill.name, medicham.name), show_decisions=True))
+```
+
+按剧本出招（复现某一场的具体过程）：
 
 ```python
 from pogo_sim.battle import Battle

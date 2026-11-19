@@ -199,7 +199,7 @@ class Battle:
                 continue
 
             opponent = self.sides[1 - side.index]
-            decision = self.policies[side.index].decide_action(BattleView(turn, side, opponent))
+            decision = self.policies[side.index].decide_action(BattleView(turn, side, opponent, self.rules))
 
             if isinstance(decision.action, FastAction):
                 move = side.fast_move
@@ -344,7 +344,7 @@ class Battle:
         shielded = False
         shield_reason = None
         if opponent.shields > 0 and "instant" not in move.tags:
-            view = BattleView(turn, me=opponent, opponent=me)
+            view = BattleView(turn, me=opponent, opponent=me, rules=self.rules)
             decision = self.policies[opponent.index].decide_shield(view, move, damage)
             shield_reason = decision.reason
             if decision.use_shield:
