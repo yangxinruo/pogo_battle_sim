@@ -20,6 +20,7 @@
 7. Mega
 8. PvPoke 的 AI 策略
 9. 待确认问题
+10. 自定义数据（覆盖文件）
 
 ---
 
@@ -307,7 +308,7 @@ PvPoke 目前的做法（都是 **参考 PvPoke**，其中多项它自己也说�
 - **Mega 等级 4 的等级上限**：等级上限从 50 提到 52（`Pokemon.js` 第 294 行，2026-09-02 提交 "Mega Level 4 CP Boost"）。
 - **CP 超上限的 Mega**：PvPoke 直接按 `defaultIVs` 用一个很低的等级（例如 Mega 超梦X 在 1500 联盟是 9 级），当成普通的低等级宝可梦处理。
 - **Mega 的属性加成**：PvPoke 没有实现。
-- **每队几只 Mega**：PvPoke 的模拟是 1v1，不涉及。
+- **每队几只 Mega**：PvPoke 的模拟是 1v1，不涉及；它的组队工具（`interface/TeamInterface.js` 第 817 行）在队里已有 Mega 时排除其他 Mega，即按每队 1 只处理。
 
 用户 2026-11-17 的答复（Q9–Q11），本项目的做法：
 - **Mega 等级 1–4 和专属招式加成是游戏正式机制**，照 PvPoke 实现。
@@ -315,6 +316,11 @@ PvPoke 目前的做法（都是 **参考 PvPoke**，其中多项它自己也说�
 - **第三个大招只有 Mega 能带**，按 gamemaster 里有 `extraChargedMoves` 的实现。普通宝可梦目前只有两个大招。
 - **CP 超上限的 Mega**：给定 IV，取不超过 CP 上限的最高等级，做成可配置。
 - 另外，挑选让实际战斗力最大的 IV（按攻×防×HP 的乘积排名）是一个单独的功能，放在路线图第 2 步（自定义宝可梦）里做。
+
+用户 2026-11-18 的答复：
+- **Mega 属性加成只在 Raid 生效，PvP 不生效**。Raid 里的数值是：与 Mega 同属性的招式 1.3 倍、其他属性 1.1 倍，作用于其他训练师的宝可梦，Mega 自己没有加成。引擎不实现这一项。
+- **每队只能带 1 只 Mega**（正作基本也只允许一只）。3v3 组队时检查。
+- 等级上限的几种赛季规则（固定 52、Mega 后 55、普通上限 + 挚友 + 2）**对所有 Mega 等级都生效，大师联盟也适用**。PvPoke 当前的做法不同：只有 Mega 等级 4 是 52，大师联盟仍是 50（`Pokemon.js` 第 294 行；`interface/PokeSelect.js` 第 347 行把 Mega 等级 4 的原形等级算作"Mega 等级 − 2"，说明它的 52 是"基础上限 50 + 2"）。
 
 ---
 
@@ -475,6 +481,8 @@ PvPoke 有两套决策代码：
 | Q10 第三个大招 | 只有 Mega 能带，按 gamemaster 的 `extraChargedMoves` 实现 | 已验证（用户确认） |
 | Q11 CP 超上限的 Mega | 给定 IV，取不超过 CP 上限的最高等级，做成可配置 | 用户同意 |
 | Q13 换人冷却在大招期间 | 照常走。需要一个"每次大招折算几秒"的参数，3v3 阶段实测后定 | 机制已确认；数值待实测 |
+| Mega 属性加成 | 只在 Raid 生效，PvP 不生效，引擎不实现（见第 7 节） | 用户确认（2026-11-18） |
+| 每队几只 Mega | 1 只 | 用户确认（2026-11-18） |
 
 ### 9.2 仍待确认（都不阻塞 1v1 引擎，先按 PvPoke 做）
 
@@ -493,7 +501,8 @@ PvPoke 是生效（例如 Icy Wind 被挡仍降攻）。我的了解也是生效
 
 **Moonblast+ 是否吃 Mega 等级加成？**（2026-11-18 新发现）
 19 个 "+" 招式里只有 `MOONBLAST_PLUS` 在 PvPoke 数据里没有 `isMegaMove` 标记，PvPoke 因此不给它加成（Mega 等级 4 时少算 30%）。其他 18 个都有。
-用户说明（2026-11-18）：Mega 皮可西 12 月才开放，gamemaster 里它也是 `released: false`，目前这组数据是 PvPoke 的推测，缺标记大概率也是因为这个。现在按 PvPoke 数据实现（不加成）；正式上线后更新 gamemaster 快照再核对，必要时在自定义覆盖文件里补标记。
+用户说明（2026-11-18）：Mega 皮可西 12 月才开放，gamemaster 里它也是 `released: false`，目前这组数据是 PvPoke 的推测，缺标记大概率也是因为这个。现在按 PvPoke 数据实现（不加成）；正式上线后更新 gamemaster 快照再核对。
+想按"有加成"算时，加载覆盖文件 `data/custom/moonblast_plus_mega_flag.toml`（见第 10 节）。
 
 **Mega 削弱的准确门槛。**
 只能确定在 5425–6039 之间，暂取 6000。等出现 CP 落在这个区间的新 Mega 时再定。
@@ -514,3 +523,59 @@ PvPoke 是生效（例如 Icy Wind 被挡仍降攻）。我的了解也是生效
 | Mega 等级上限 | 52（PvPoke 当前值） | 按赛季配置 | 路线图第 2 步 |
 
 非默认选项只有单项测试（`tests/test_battle.py`），没有和游戏实测对照过。
+
+---
+
+## 10. 自定义数据（覆盖文件）
+
+未发布的宝可梦、招式，以及对已有条目的修正，写在 `data/custom/` 下的 TOML 文件里，不改 `data/gamemaster.json`。实现在 `pogo_sim/custom.py`。
+
+```python
+gm = load_gamemaster(custom_files=["data/custom/mega_froslass.toml"])
+print("\n".join(gm.custom_log))  # 每条改动一行，包括种族值怎么换算来的
+```
+
+### 10.1 格式
+- **TOML**：Python 标准库 `tomllib` 能读，不加依赖；能写注释，可以写明数据来源和哪些是假设。
+- **字段名与 gamemaster.json 相同**（`speciesName`、`baseStats`、`fastMoves`、`energyGain`……），PvPoke 的条目可以直接复制过来改。合并发生在原始字典这一层，合并后和 gamemaster 走同一套解析。
+- 四种表，写法 `[表名.ID]`，按这个顺序应用（先招式后宝可梦，宝可梦可以用同一个文件里新加的招式）：
+
+  | 表 | 作用 | 报错 |
+  |---|---|---|
+  | `new_moves` | 新招式 | ID 已存在 |
+  | `patch_moves` | 修改已有招式，只替换写出来的字段 | ID 不存在 |
+  | `new_pokemon` | 新宝可梦 | ID 已存在 |
+  | `patch_pokemon` | 修改已有宝可梦，只替换写出来的字段 | ID 不存在 |
+
+  "新"的 ID 撞上已有条目，多半是 PvPoke 后来加了同名条目，要人来决定删掉自定义还是改成 patch；"改"的 ID 不存在，多半是拼错。两种都不悄悄继续。
+- patch 是顶层字段整体替换：列表和 `baseStats` 这类嵌套值整个换掉，不做合并。
+- 另有 `[meta]` 表放说明（`description`、`sources`），加载时不用。
+- 多个文件按给定顺序应用，后面的文件可以修改前面文件新加的条目。
+
+### 10.2 种族值
+新宝可梦二选一：
+- `baseStats = { atk, def, hp }`：直接给 GO 种族值。
+- `mainSeriesStats = { hp, attack, defense, spAttack, spDefense, speed }`：给正作六项，加载时按 2.5 节换算。`tags` 里有 `"mega"` 时用 Mega 的削弱规则（≥ 6000 乘 0.97），否则用非 Mega 的（≥ 4000 乘 0.91）。两条规则可以在 `load_gamemaster` 里换成别的假设。
+
+`patch_pokemon` 也可以写 `mainSeriesStats`，换算结果替换原来的 `baseStats`。
+
+### 10.3 检查
+加载时会报错的情况：表名或字段名不认识（字段名以 gamemaster 里出现过的为准）、缺必填字段、属性名不认识、种族值没写全、`speciesId` / `moveId` 和表名里的 ID 不一致、招式数值不是数字；新增或修改过的宝可梦引用了不存在的招式，或快招列表里有大招、大招列表里有快招。
+
+必填字段：
+- 新招式：`name`、`type`、`power`、`energy`、`energyGain`、`turns`。快招还是大招按 PvPoke 的规则判断（`energyGain > 0` 是快招，除非写了 `category`）。
+- 新宝可梦：`speciesName`、`dex`、`types`、`fastMoves`、`chargedMoves`，以及 `baseStats` / `mainSeriesStats` 之一。`tags`、`extraChargedMoves`、`defaultIVs` 可省略；`released` 不写时为未发布。
+
+### 10.4 现有的覆盖文件
+| 文件 | 内容 | 依据 |
+|---|---|---|
+| `mega_froslass.toml` | Mega 雪妖女：正作 70/80/70/140/100/120 → 289/194/172（40 级满 IV CP 3753，不削弱）；招式池照抄雪妖女；`supermega`（默认 Mega 等级 4） | 正作能力值来自 Legends Z-A；**Mega 专属招式 `AVALANCHE_PLUS`（75 威力 / 35 能量）是假设的** |
+| `moonblast_plus_mega_flag.toml` | 给 `MOONBLAST_PLUS` 补 `isMegaMove` | 假设，见 9.2 |
+
+### 10.5 测试
+`tests/test_custom.py`：
+- 示例文件的加载结果和日志；
+- 只给正作能力值定义 Mega 超梦X、Mega 路卡利欧、请假王的副本，种族值与 gamemaster 一致（分别覆盖 0.97 削弱、不削弱、0.91 削弱）；
+- 换削弱门槛、patch 只改写出来的字段、后一个文件改前一个文件的条目；
+- 17 种写错的情况都报错。
+

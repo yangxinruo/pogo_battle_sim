@@ -1,16 +1,20 @@
 """读取 PvPoke 的 gamemaster.json，转成本项目的数据结构。
 
-数据来源和版本见 data/SOURCE.md。这里只读取、不修改原始数据；
-自定义宝可梦和技能以后放在单独的覆盖文件里。
+数据来源和版本见 data/SOURCE.md。这里只读取、不修改原始文件；
+自定义宝可梦和技能放在单独的覆盖文件里（见 custom.py），读入后在内存里合并。
 
 字段含义参考 PvPoke src/js/GameMaster.js 的 getMoveById 和
 src/js/pokemon/Pokemon.js 的构造函数。
 """
 
 import json
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
+from pogo_sim.conversion import MEGA_NERF, STANDARD_NERF, NerfRule
+from pogo_sim.custom import CustomDataError, RawEntry, apply_custom_file
 from pogo_sim.stats import BaseStats, IVs
 
 DEFAULT_GAMEMASTER_PATH: Path = (
@@ -104,6 +108,8 @@ class GameMaster:
     species: dict[str, Species]
     moves: dict[str, Move]
     timestamp: str
+    # 覆盖文件做了哪些改动，每条一行（没有加载覆盖文件时为空）。见 custom.py。
+    custom_log: tuple[str, ...] = ()
 
     def get_species(self, species_id: str) -> Species:
         if species_id not in self.species:
@@ -205,12 +211,72 @@ def _parse_species(raw: dict) -> Species:
     )
 
 
-def load_gamemaster(path: Path = DEFAULT_GAMEMASTER_PATH) -> GameMaster:
-    """读取 gamemaster.json。"""
+def load_gamemaster(
+    path: Path = DEFAULT_GAMEMASTER_PATH,
+    custom_files: Sequence[Path | str] = (),
+    standard_nerf: NerfRule = STANDARD_NERF,
+    mega_nerf: NerfRule = MEGA_NERF,
+) -> GameMaster:
+    """读取 gamemaster.json，再按顺序应用覆盖文件。
+
+    custom_files：覆盖文件路径（TOML，格式见 custom.py）。后面的文件可以修改前面文件新加的条目。
+    standard_nerf / mega_nerf：覆盖文件里用 mainSeriesStats 写的宝可梦，换算时用的削弱规则。
+    改动记录在返回值的 custom_log 里。
+    """
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
 
-    moves = {m["moveId"]: _parse_move(m) for m in raw["moves"]}
-    species = {p["speciesId"]: _parse_species(p) for p in raw["pokemon"]}
+    raw_moves: dict[str, RawEntry] = {m["moveId"]: m for m in raw["moves"]}
+    raw_species: dict[str, RawEntry] = {p["speciesId"]: p for p in raw["pokemon"]}
 
-    return GameMaster(species=species, moves=moves, timestamp=raw["timestamp"])
+    custom_log: list[str] = []
+    custom_species_ids: set[str] = set()
+    for custom_path in custom_files:
+        result = apply_custom_file(
+            Path(custom_path), raw_species, raw_moves, standard_nerf, mega_nerf
+        )
+        custom_log.extend(result.log)
+        custom_species_ids |= result.species_ids
+
+    moves = {move_id: _parse_entry(_parse_move, entry) for move_id, entry in raw_moves.items()}
+    species = {
+        species_id: _parse_entry(_parse_species, entry)
+        for species_id, entry in raw_species.items()
+    }
+    for species_id in sorted(custom_species_ids):
+        _check_move_references(species[species_id], moves)
+
+    return GameMaster(
+        species=species,
+        moves=moves,
+        timestamp=raw["timestamp"],
+        custom_log=tuple(custom_log),
+    )
+
+
+T = TypeVar("T")
+
+
+def _parse_entry(parse: Callable[[dict], T], entry: RawEntry) -> T:
+    """解析一个条目；出错时在信息里写明是哪个条目（主要为了覆盖文件写错时好找）。"""
+    try:
+        return parse(entry)
+    except (KeyError, TypeError, ValueError) as error:
+        entry_id = entry.get("speciesId", entry.get("moveId"))
+        raise CustomDataError(f"解析 {entry_id} 出错：{error!r}") from error
+
+
+def _check_move_references(species: Species, moves: dict[str, Move]) -> None:
+    """覆盖文件里新增或修改过的宝可梦：招式都要存在，快招列表里要是快招，大招列表里要是大招。
+
+    gamemaster 原有的条目不检查（有两个已知的原始数据特例，见 tests/test_gamemaster.py）。
+    """
+    for move_id in species.fast_move_ids + species.charged_move_ids + species.extra_charged_move_ids:
+        if move_id not in moves:
+            raise CustomDataError(f"{species.species_id} 引用了不存在的招式 {move_id}")
+    for move_id in species.fast_move_ids:
+        if not moves[move_id].is_fast:
+            raise CustomDataError(f"{species.species_id} 的 fastMoves 里 {move_id} 不是快速技能")
+    for move_id in species.charged_move_ids + species.extra_charged_move_ids:
+        if moves[move_id].is_fast:
+            raise CustomDataError(f"{species.species_id} 的大招列表里 {move_id} 是快速技能")

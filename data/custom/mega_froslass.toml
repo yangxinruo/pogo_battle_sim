@@ -1,0 +1,49 @@
+# 自定义数据：Mega 雪妖女（未发布）
+#
+# 覆盖文件不会自动生效，要在代码里显式加载：
+#   gm = load_gamemaster(custom_files=["data/custom/mega_froslass.toml"])
+# 字段名和 PvPoke 的 gamemaster.json 完全相同，可以直接对照 data/gamemaster.json 复制修改。
+#
+# 四种表，写法 [表名.ID]：
+#   new_pokemon    新宝可梦。ID 已经在 gamemaster 里时报错（防止 PvPoke 以后加了同名条目却被悄悄覆盖）
+#   patch_pokemon  修改已有宝可梦。只替换写出来的字段，其余保持原样；ID 不存在时报错（防止拼错）
+#   new_moves      新招式
+#   patch_moves    修改已有招式
+# 加载时先处理招式、再处理宝可梦；多个文件按给定顺序依次应用。
+
+[meta]
+description = "Mega 雪妖女。正作能力值来自 Legends Z-A；Mega 专属招式是假设的。"
+sources = ["https://pokedexia.com/en/pokedex/forme/froslass-mega"]
+
+
+[new_pokemon.froslass_mega]
+speciesName = "Froslass (Mega)"
+dex = 478
+types = ["ice", "ghost"]
+
+# 正作六项种族值（Legends Z-A：70 / 80 / 70 / 140 / 100 / 120）。
+# 加载时用 conversion.convert_main_series_stats 换算成 GO 种族值：攻 289 / 防 194 / HP 172
+# （40 级满 IV CP 3753，低于 Mega 削弱门槛 6000，不削弱）。
+# 想直接给 GO 种族值时，换成 baseStats = { atk = 289, def = 194, hp = 172 }。两者只能写一个。
+mainSeriesStats = { hp = 70, attack = 80, defense = 70, spAttack = 140, spDefense = 100, speed = 120 }
+
+# 招式池照抄普通雪妖女（gamemaster 的 froslass）。
+fastMoves = ["HEX", "POWDER_SNOW"]
+chargedMoves = ["AVALANCHE", "CRUNCH", "SHADOW_BALL", "TRIPLE_AXEL"]
+extraChargedMoves = ["AVALANCHE_PLUS"]  # 第三个大招只能从这里选
+
+tags = ["mega", "supermega"]  # supermega：默认 Mega 等级 4（照 PvPoke）
+released = false
+
+
+# 假设的 Mega 专属招式，没有依据。
+# 数值照现有 "+" 招式的规律编的：比原招便宜、威力低一些，靠 Mega 等级加成（最高 1.3 倍）补回来。
+# 对照：Avalanche 90 威力 / 45 能量；Surf+ 55 / 35（Surf 75 / 45）；Drill Peck+ 60 / 35（Drill Peck 70 / 40）。
+[new_moves.AVALANCHE_PLUS]
+name = "Avalanche+"
+type = "ice"
+power = 75
+energy = 35
+energyGain = 0
+turns = 1
+isMegaMove = true

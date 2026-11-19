@@ -1,0 +1,10 @@
+# 假设：Mega 皮可西的 Moonblast+ 和其他 18 个 "+" 招式一样吃 Mega 等级加成。
+#
+# PvPoke 数据里只有它没有 isMegaMove 标记（docs/mechanics.md 9.2）。Mega 皮可西 12 月才开放，
+# 目前的数据是 PvPoke 的推测。上线后更新 gamemaster 快照再核对；如果 PvPoke 补上了标记，删掉这个文件。
+
+[meta]
+description = "给 MOONBLAST_PLUS 补上 isMegaMove 标记"
+
+[patch_moves.MOONBLAST_PLUS]
+isMegaMove = true

@@ -6,8 +6,10 @@ from pogo_sim.conversion import (
     MEGA_NERF,
     MainSeriesStats,
     NerfRule,
+    STANDARD_NERF,
     apply_conversion_formula,
     convert_main_series_stats,
+    convert_with_details,
     round_half_up,
 )
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
@@ -40,6 +42,22 @@ def test_mega_mewtwo_x_with_mega_nerf(gm: GameMaster) -> None:
     expected = BaseStats(atk=399, def_=215, hp=228)
     assert convert_main_series_stats(MEGA_MEWTWO_X, is_mega=True) == expected
     assert gm.get_species("mewtwo_mega_x").base_stats == expected
+
+
+def test_conversion_details() -> None:
+    """convert_with_details 保留换算过程：只套公式的结果、判断用的 CP、有没有削弱。"""
+    result = convert_with_details(MEGA_MEWTWO_X, is_mega=True)
+    assert result.stats == BaseStats(atk=399, def_=215, hp=228)
+    assert result.formula_stats == BaseStats(atk=412, def_=222, hp=235)
+    assert result.check_cp == 6491
+    assert result.nerf_rule == MEGA_NERF
+    assert result.nerfed
+    assert result.describe() == "只套公式 412/222/235，40 级满 IV CP 6491 ≥ 6000，乘 0.97"
+
+    # 同样的能力值按非 Mega 规则：门槛 4000，乘 0.91
+    standard = convert_with_details(MEGA_MEWTWO_X)
+    assert standard.nerf_rule == STANDARD_NERF
+    assert standard.describe() == "只套公式 412/222/235，40 级满 IV CP 6491 ≥ 4000，乘 0.91"
 
 
 def test_custom_nerf_rule() -> None:

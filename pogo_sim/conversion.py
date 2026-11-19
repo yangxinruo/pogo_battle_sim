@@ -106,6 +106,54 @@ def apply_conversion_formula(main: MainSeriesStats, multiplier: float = 1.0) -> 
     return BaseStats(atk=atk, def_=def_, hp=hp)
 
 
+@dataclass(frozen=True)
+class ConversionResult:
+    """一次换算的结果和过程，方便在日志里说明"为什么是这个数"。"""
+
+    stats: BaseStats  # 最终的 GO 种族值
+    formula_stats: BaseStats  # 只套公式、不削弱的结果
+    check_cp: int  # formula_stats 在 15/15/15、40 级的 CP，用来判断要不要削弱
+    nerf_rule: NerfRule  # 用的是哪条削弱规则
+    nerfed: bool  # check_cp ≥ 门槛，乘了削弱倍率
+
+    def describe(self) -> str:
+        """一句话说明换算过程，例如"只套公式 412/222/235，40 级满 IV CP 6491 ≥ 6000，乘 0.97"。"""
+        f = self.formula_stats
+        rule = self.nerf_rule
+        text = f"只套公式 {f.atk}/{f.def_}/{f.hp}，40 级满 IV CP {self.check_cp}"
+        if self.nerfed:
+            return f"{text} ≥ {rule.cp_threshold}，乘 {rule.multiplier}"
+        return f"{text} < {rule.cp_threshold}，不削弱"
+
+
+def convert_with_details(
+    main: MainSeriesStats,
+    is_mega: bool = False,
+    nerf_rule: NerfRule | None = None,
+) -> ConversionResult:
+    """把正作种族值换算成 GO 种族值，并保留换算过程。公式见 convert_main_series_stats。"""
+    if nerf_rule is None:
+        nerf_rule = MEGA_NERF if is_mega else STANDARD_NERF
+
+    formula_stats = apply_conversion_formula(main)
+    max_ivs = IVs(atk=15, def_=15, hp=15)
+    check_cp = calculate_cp(formula_stats, max_ivs, NERF_CHECK_LEVEL)
+    nerfed = check_cp >= nerf_rule.cp_threshold
+
+    if nerfed:
+        stats = apply_conversion_formula(main, multiplier=nerf_rule.multiplier)
+    else:
+        stats = formula_stats
+
+    return ConversionResult(
+        stats=stats,
+        formula_stats=formula_stats,
+        check_cp=check_cp,
+        nerf_rule=nerf_rule,
+        nerfed=nerfed,
+    )
+
+
 def convert_main_series_stats(
     main: MainSeriesStats,
     is_mega: bool = False,
@@ -121,14 +169,6 @@ def convert_main_series_stats(
     然后按削弱规则判断：用上面的结果算 15/15/15、40 级的 CP，达到门槛就按倍率重新换算。
     nerf_rule 不传时，Mega 用 MEGA_NERF，其他用 STANDARD_NERF。
     想试别的门槛（比如 Mega 门槛的不同假设）时可以传自己的 NerfRule。
+    想知道换算过程（有没有削弱、CP 是多少）时用 convert_with_details。
     """
-    if nerf_rule is None:
-        nerf_rule = MEGA_NERF if is_mega else STANDARD_NERF
-
-    stats = apply_conversion_formula(main)
-
-    max_ivs = IVs(atk=15, def_=15, hp=15)
-    if calculate_cp(stats, max_ivs, NERF_CHECK_LEVEL) >= nerf_rule.cp_threshold:
-        return apply_conversion_formula(main, multiplier=nerf_rule.multiplier)
-
-    return stats
+    return convert_with_details(main, is_mega, nerf_rule).stats

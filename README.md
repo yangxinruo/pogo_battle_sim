@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -10,7 +10,8 @@
   - `cpm.py`：等级与 CP 倍率（CPM）表
   - `stats.py`：IV、CP、HP、实际攻防
   - `conversion.py`：正作六项能力值 → GO 种族值
-  - `gamemaster.py`：读取 PvPoke gamemaster.json
+  - `gamemaster.py`：读取 PvPoke gamemaster.json，并合并覆盖文件
+  - `custom.py`：自定义覆盖文件（新宝可梦、新招式、修改已有条目）
   - `rules.py`：所有可配置的机制参数（`BattleRules`）
   - `typechart.py`：属性克制表
   - `damage.py`：伤害公式
@@ -23,6 +24,7 @@
 - `tools/pvpoke_ref/`：在 Node 里运行 PvPoke 源码、生成参考数据的脚本
 - `tools/compare_simple_policy.py`：简单规则策略与 PvPoke AI 的比较（`.venv/bin/python -m tools.compare_simple_policy`）
 - `data/`：PvPoke gamemaster.json 快照（来源见 `data/SOURCE.md`）
+- `data/custom/`：自定义覆盖文件（TOML），格式见 docs/mechanics.md 第 10 节
 - `docs/`：机制规格文档
 
 ## 开发环境
@@ -86,6 +88,21 @@ assert azumarill_policy.unused_charged() == [] and medicham_policy.unused_charge
 print(result)
 print(format_timeline(result.events, (azumarill.name, medicham.name)))
 ```
+
+## 自定义宝可梦和招式
+
+未发布的宝可梦、招式，或对已有条目的修正，写在 `data/custom/` 下的 TOML 文件里（字段名与 gamemaster.json 相同），加载时显式传入：
+
+```python
+from pogo_sim.gamemaster import load_gamemaster
+
+gm = load_gamemaster(custom_files=["data/custom/mega_froslass.toml"])
+print("\n".join(gm.custom_log))
+# mega_froslass.toml：新招式 AVALANCHE_PLUS（name "Avalanche+"，type "ice"，power 75，...）
+# mega_froslass.toml：新宝可梦 froslass_mega（Froslass (Mega)）：种族值 289/194/172（由正作 70/80/70/140/100/120 换算，...）
+```
+
+宝可梦可以只给正作六项能力值（`mainSeriesStats`），加载时自动换算成 GO 种族值（含 0.91 / Mega 0.97 削弱）。格式和检查规则见 [docs/mechanics.md](docs/mechanics.md) 第 10 节，示例见 `data/custom/mega_froslass.toml`。
 
 ## PvPoke 参考数据
 
