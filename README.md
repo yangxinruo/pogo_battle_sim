@@ -2,13 +2,14 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，并给 IV 组合排名。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
 - `pogo_sim/`：Python 包
   - `cpm.py`：等级与 CP 倍率（CPM）表
   - `stats.py`：IV、CP、HP、实际攻防
+  - `iv_ranking.py`：联盟 CP 上限下的 IV 排名（按能力值乘积）
   - `conversion.py`：正作六项能力值 → GO 种族值
   - `gamemaster.py`：读取 PvPoke gamemaster.json，并合并覆盖文件
   - `custom.py`：自定义覆盖文件（新宝可梦、新招式、修改已有条目）
@@ -104,6 +105,19 @@ print("\n".join(gm.custom_log))
 
 宝可梦可以只给正作六项能力值（`mainSeriesStats`），加载时自动换算成 GO 种族值（含 0.91 / Mega 0.97 削弱）。格式和检查规则见 [docs/mechanics.md](docs/mechanics.md) 第 10 节，示例见 `data/custom/mega_froslass.toml`。
 
+## IV 排名
+
+```python
+from pogo_sim.iv_ranking import find_rank, rank_species_ivs
+from pogo_sim.stats import IVs
+
+ranking = rank_species_ivs(gm.get_species("froslass_mega"), 1500)  # 可选 level_cap、iv_floor、level_floor
+print(ranking[0].describe())                            # IV 4/15/15，14.5 级，CP 1498，第 1 名（100.00%）
+print(find_rank(ranking, IVs(15, 15, 15)).describe())  # IV 15/15/15，13.5 级，CP 1448，第 3696 名（92.53%）
+```
+
+做法和默认的 IV 下限见 [docs/mechanics.md](docs/mechanics.md) 第 11 节。
+
 ## PvPoke 参考数据
 
 `tests/fixtures/` 里的参考数据由 PvPoke 源码计算，已入库，所以跑 pytest 不需要 Node。
@@ -124,6 +138,7 @@ print("\n".join(gm.custom_log))
    ```bash
    node tools/pvpoke_ref/export_damage_reference.js --pvpoke <目录>
    node tools/pvpoke_ref/export_battle_reference.js --pvpoke <目录>
+   node tools/pvpoke_ref/export_iv_reference.js --pvpoke <目录>
    ```
 
 PvPoke 源码不入本仓库。

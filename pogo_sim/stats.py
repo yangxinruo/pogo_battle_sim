@@ -7,7 +7,7 @@
 from dataclasses import dataclass
 from math import floor, sqrt
 
-from pogo_sim.cpm import LEVEL_STEP, MIN_LEVEL, get_cpm
+from pogo_sim.cpm import LEVEL_STEP, MIN_LEVEL, get_cpm, is_valid_level
 
 # CP 的最小值。来源：PvPoke Pokemon.initialize。验证状态：参考 PvPoke。
 MIN_CP: int = 10
@@ -84,18 +84,38 @@ def calculate_battle_stats(base: BaseStats, ivs: IVs, level: float) -> BattleSta
 
 
 def highest_level_under_cp(
-    base: BaseStats, ivs: IVs, cp_limit: int, level_cap: float = 50.0
+    base: BaseStats,
+    ivs: IVs,
+    cp_limit: int,
+    level_cap: float = 50.0,
+    level_floor: float = MIN_LEVEL,
 ) -> float | None:
-    """给定 IV，返回 CP 不超过上限的最高等级（步长 0.5，不超过 level_cap）。
+    """给定 IV，返回 CP 不超过上限的最高等级（步长 0.5，在 level_floor 到 level_cap 之间）。
 
-    如果 1 级就已经超过上限，返回 None。
-    CP 随等级单调不减，所以从低往高找到第一个超限的等级即可。
+    如果在 level_floor 就已经超过上限，返回 None。
+    CPM 随等级严格增大，所以 CP 随等级单调不减，可以用二分查找。
     """
-    best: float | None = None
-    level = MIN_LEVEL
-    while level <= level_cap:
-        if calculate_cp(base, ivs, level) > cp_limit:
-            break
-        best = level
-        level += LEVEL_STEP
-    return best
+    if not (is_valid_level(level_floor) and is_valid_level(level_cap)):
+        raise ValueError(f"不合法的等级范围：{level_floor} 到 {level_cap}")
+    if level_floor > level_cap:
+        raise ValueError(f"最低等级 {level_floor} 高于等级上限 {level_cap}")
+
+    def level_at(step: int) -> float:
+        return level_floor + step * LEVEL_STEP
+
+    def fits(step: int) -> bool:
+        return calculate_cp(base, ivs, level_at(step)) <= cp_limit
+
+    if not fits(0):
+        return None
+
+    # 二分查找最后一个合法的格子。不变式：low 合法；high 之后的都不合法。
+    low = 0
+    high = round((level_cap - level_floor) / LEVEL_STEP)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if fits(mid):
+            low = mid
+        else:
+            high = mid - 1
+    return level_at(low)

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from pogo_sim.conversion import MEGA_NERF, STANDARD_NERF, NerfRule
+from pogo_sim.cpm import MIN_LEVEL
 from pogo_sim.custom import CustomDataError, RawEntry, apply_custom_file
 from pogo_sim.stats import BaseStats, IVs
 
@@ -91,6 +92,9 @@ class Species:
     tags: tuple[str, ...]
     released: bool
     default_spreads: dict[int, DefaultSpread]
+    # gamemaster 的 levelFloor：能获得的最低等级（如只能从调查或 Raid 获得，最低 15 或 20 级），
+    # 没写的是 1。PvPoke 在 IV 排名时不考虑低于这个等级的情况（见 iv_ranking.py）。
+    level_floor: float
 
     @property
     def is_shadow(self) -> bool:
@@ -208,6 +212,7 @@ def _parse_species(raw: dict) -> Species:
         tags=tuple(raw.get("tags", [])),
         released=raw.get("released", False),
         default_spreads=_parse_default_spreads(raw.get("defaultIVs", {})),
+        level_floor=float(raw.get("levelFloor", MIN_LEVEL)),
     )
 
 
