@@ -326,3 +326,22 @@ def test_bad_custom_file_raises(tmp_path: Path, case: str) -> None:
     with pytest.raises(CustomDataError, match=re.escape(message)):
         load_gamemaster(custom_files=[path])
 
+
+
+def test_mega_zygarde_file() -> None:
+    """Mega 基格尔德：40 级满 IV CP 8052 超过门槛，按 0.97 削弱；专属招式能当第三个大招。"""
+    gm = load_gamemaster(custom_files=[CUSTOM_DATA_DIR / "mega_zygarde.toml"])
+    zygarde = gm.get_species("zygarde_mega")
+    assert zygarde.base_stats == BaseStats(atk=403, def_=181, hp=415)
+    assert gm.custom_log[1] == (
+        "mega_zygarde.toml：新宝可梦 zygarde_mega（Zygarde (Mega)）：种族值 403/181/415"
+        "（由正作 216/70/91/216/85/100 换算，Mega 规则：只套公式 416/187/428，"
+        "40 级满 IV CP 8052 ≥ 6000，乘 0.97）"
+    )
+    assert zygarde.extra_charged_move_ids == ("NIHIL_LIGHT",)
+    assert gm.get_move("NIHIL_LIGHT").is_mega_move
+
+    build = PokemonBuild("zygarde_mega", 50, IVs(15, 15, 15), "DRAGON_TAIL", ("CRUNCH", "BULLDOZE", "NIHIL_LIGHT"))
+    combatant = make_combatant(gm, build, 0, shields=2)
+    assert combatant.cp == 8568
+    assert combatant.mega_level == 4

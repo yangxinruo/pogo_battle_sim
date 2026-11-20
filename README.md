@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，并按赛季规则（含 Mega 等级上限）建立配置。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -22,9 +22,14 @@
   - `simple_policy.py`：简单规则策略 `SimplePolicy`（规则和参数见文件开头）
   - `battle.py`：1v1 回合结算引擎
   - `timeline.py`：时间线事件、逐回合快照、文字日志
+  - `report.py`：对战报告的文字部分（双方配置和配置说明、结果一行）
+  - `moveset.py`：配招和招式池检查
+  - `matchups.py`：对战配置文件（TOML）和 0–2 盾对 0–2 盾的九宫格
 - `tests/`：pytest 测试；`tests/fixtures/` 是用 PvPoke 源码生成的参考数据
 - `tools/pvpoke_ref/`：在 Node 里运行 PvPoke 源码、生成参考数据的脚本
 - `tools/compare_simple_policy.py`：简单规则策略与 PvPoke AI 的比较（`.venv/bin/python -m tools.compare_simple_policy`）
+- `tools/run_matchups.py`：按对战配置文件跑九宫格（`.venv/bin/python -m tools.run_matchups <配置文件>`）
+- `experiments/`：对战配置文件，例如 Mega 基格尔德在大师联盟（`mega_zygarde_ml.toml`）；结果在 `docs/experiments/`
 - `data/`：PvPoke gamemaster.json 快照（来源见 `data/SOURCE.md`）
 - `data/custom/`：自定义覆盖文件（TOML），格式见 docs/mechanics.md 第 10 节
 - `docs/`：机制规格文档
@@ -138,6 +143,87 @@ build = season_build(gm, "froslass_mega", 10000, "POWDER_SNOW", ["AVALANCHE"], s
 ```
 
 预设和各项规则见 [docs/mechanics.md](docs/mechanics.md) 第 7 节。
+
+## 对战配置文件：换配招、对手不用改代码
+
+把要比较的配招和对手写进一个 TOML 文件，每一对打 0–2 盾对 0–2 盾的九宫格：
+
+```toml
+league = 10000
+season = "pvpoke"                                  # 或 mega_cap_52 / mega_cap_55 / mega_plus_2
+custom_files = ["data/custom/mega_zygarde.toml"]   # 自定义宝可梦、招式，以及赛季的招式调整
+
+[[subject]]
+label = "Bite + Bulldoze"
+species = "zygarde_mega"
+fast = "BITE"
+charged = ["CRUNCH", "BULLDOZE", "NIHIL_LIGHT"]
+
+[[opponent]]
+label = "Mega Mewtwo Y (Avalanche)"
+species = "mewtwo_mega_y"
+fast = "PSYCHO_CUT"
+charged = ["PSYSTRIKE", "AVALANCHE", "FUTURE_SIGHT_PLUS"]
+outside_movepool = true                            # GO 里超梦不会 Avalanche：明确写出这是假设
+```
+
+```bash
+.venv/bin/python -m tools.run_matchups experiments/mega_zygarde_ml.toml
+```
+
+完整格式（IV、等级、挚友、策略参数等）见 `pogo_sim/matchups.py` 开头，例子见 [experiments/mega_zygarde_ml.toml](experiments/mega_zygarde_ml.toml)，结果见 [docs/experiments/mega_zygarde_ml.md](docs/experiments/mega_zygarde_ml.md)。评分的含义见 [docs/mechanics.md](docs/mechanics.md) 6.5 节。
+
+## 未发布 Mega 的 1v1（完整流程）
+
+覆盖文件 → 按赛季规则建配置 → 简单规则策略对战 → 报告：
+
+```python
+from pogo_sim.battle import Battle
+from pogo_sim.combatant import make_combatant
+from pogo_sim.gamemaster import load_gamemaster
+from pogo_sim.report import format_result, format_setup
+from pogo_sim.season import season_build
+from pogo_sim.simple_policy import SimplePolicy
+from pogo_sim.timeline import format_timeline
+
+gm = load_gamemaster(custom_files=["data/custom/mega_froslass.toml"])
+froslass = make_combatant(gm, season_build(gm, "froslass_mega", 1500, "POWDER_SNOW", ["AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"]), 0, shields=2)
+azumarill = make_combatant(gm, season_build(gm, "azumarill", 1500, "BUBBLE", ["ICE_BEAM", "PLAY_ROUGH"]), 1, shields=2)
+names = (froslass.name, azumarill.name)
+
+print(format_setup((froslass, azumarill)))  # 要在对战开始前调用：盾数会在对战中变化
+result = Battle((froslass, azumarill), (SimplePolicy(), SimplePolicy())).run()
+print(format_result(result, names))
+print(format_timeline(result.events, names, show_decisions=True))
+```
+
+输出（节选）：
+
+```
+[0] Froslass (Mega)  CP 1498  level 14.5  IV 4/15/15  Mega level 4  shields 2
+    HP 95  atk 149.05  def 106.32
+    fast POWDER_SNOW  charged AVALANCHE, SHADOW_BALL, AVALANCHE_PLUS
+    build notes:
+      赛季规则：PvPoke 兼容；超级联盟
+      Mega 等级 4（默认）
+      Mega 等级上限 52（适用条件：只限 Mega 等级 ≥ 4，大师联盟除外）
+      IV 4/15/15：超级联盟 IV 排名第 1（能力值乘积最大；IV 下限 0，共 4096 个组合）
+      等级 14.5：52 级时 CP 4187 超过 1500，自动降到 CP 不超过上限的最高等级（CP 1498）
+
+[1] Azumarill  CP 1499  level 45.5  IV 0/15/15  shields 2
+    ...
+Froslass (Mega) wins: rating 578 vs 421, HP left 15 vs 0, 49 turns
+T   1  Froslass (Mega) decides fast POWDER_SNOW  (energy 0 < 35 needed for AVALANCHE_PLUS)
+...
+T  15  Froslass (Mega) decides charged AVALANCHE_PLUS  (bait: opponent has 2 shield(s), throw AVALANCHE_PLUS (35) instead of SHADOW_BALL)
+T  15  Froslass (Mega) CHARGED AVALANCHE_PLUS -> 1 dmg (shielded), Azumarill HP 167, energy 21  [shield: always shield (2 left)]
+...
+T  49  Froslass (Mega) CHARGED AVALANCHE_PLUS -> 52 dmg, Azumarill HP 0, energy 5
+T  49  Azumarill       BUBBLE cancelled (knocked out by a charged move this turn)
+T  49  Azumarill       FAINTS
+```
+
+Avalanche+ 的数值是假设的（见 `data/custom/mega_froslass.toml`），这个结果只说明流程能跑通，不代表 Mega 雪妖女的真实强度。
 
 ## PvPoke 参考数据
 

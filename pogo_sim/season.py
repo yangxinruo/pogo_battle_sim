@@ -91,6 +91,14 @@ MEGA_CAP_52 = SeasonRules(name="Mega 上限 52", mega_level_cap=MegaLevelCap(fix
 MEGA_CAP_55 = SeasonRules(name="Mega 提到 55", mega_level_cap=MegaLevelCap(fixed=55))
 MEGA_PLUS_2 = SeasonRules(name="Mega 多 2 级", mega_level_cap=MegaLevelCap(extra_levels=2))
 
+# 按名字选预设（对战配置文件里的 season = "..."，见 matchups.py）。
+SEASON_PRESETS: dict[str, SeasonRules] = {
+    "pvpoke": PVPOKE_SEASON,
+    "mega_cap_52": MEGA_CAP_52,
+    "mega_cap_55": MEGA_CAP_55,
+    "mega_plus_2": MEGA_PLUS_2,
+}
+
 
 def level_cap_for(
     species: Species,

@@ -1,0 +1,73 @@
+# 对战配置：Mega 基格尔德（未发布，自定义数据）在大师联盟对几只主流宝可梦。
+# 格式见 pogo_sim/matchups.py 开头。运行：
+#   .venv/bin/python -m tools.run_matchups experiments/mega_zygarde_ml.toml
+#
+# 对手的招式，没有特别说明的来自 PvPoke 的 Mega 大师联盟排名推荐
+# （src/data/rankings/mega/overall/rankings-10000.json，commit d02018e，与 data/ 的 gamemaster 快照相同）。
+
+description = "Mega 基格尔德在大师联盟：几套配招对原始盖欧卡、Mega 超梦Y（三套配招）、酋雷姆（白）、洛奇亚。"
+custom_files = ["data/custom/mega_zygarde.toml"]
+league = 10000
+season = "pvpoke"
+
+
+# ---- 测试对象：Mega 基格尔德 ----
+# 大招都带 Crunch 和专属招式 Nihil Light，比较快招（Dragon Tail / Bite）和地面招（Bulldoze / Earthquake）。
+
+[[subject]]
+label = "Dragon Tail + Bulldoze"  # 照抄 PvPoke 给完全体基格尔德的推荐
+species = "zygarde_mega"
+fast = "DRAGON_TAIL"
+charged = ["CRUNCH", "BULLDOZE", "NIHIL_LIGHT"]
+
+[[subject]]
+label = "Bite + Bulldoze"
+species = "zygarde_mega"
+fast = "BITE"
+charged = ["CRUNCH", "BULLDOZE", "NIHIL_LIGHT"]
+
+[[subject]]
+label = "Dragon Tail + Earthquake"
+species = "zygarde_mega"
+fast = "DRAGON_TAIL"
+charged = ["CRUNCH", "EARTHQUAKE", "NIHIL_LIGHT"]
+
+
+# ---- 对手 ----
+
+[[opponent]]
+label = "Primal Kyogre"
+species = "kyogre_primal"
+fast = "WATERFALL"
+charged = ["AVALANCHE", "THUNDER"]
+
+[[opponent]]
+label = "Mega Mewtwo Y (Thunderbolt)"  # PvPoke 推荐
+species = "mewtwo_mega_y"
+fast = "PSYCHO_CUT"
+charged = ["PSYSTRIKE", "THUNDERBOLT", "FUTURE_SIGHT_PLUS"]
+
+[[opponent]]
+label = "Mega Mewtwo Y (Ice Beam)"
+species = "mewtwo_mega_y"
+fast = "PSYCHO_CUT"
+charged = ["PSYSTRIKE", "ICE_BEAM", "FUTURE_SIGHT_PLUS"]
+
+[[opponent]]
+label = "Mega Mewtwo Y (Avalanche)"  # 正作里超梦会 Avalanche，GO 里不会：假设
+species = "mewtwo_mega_y"
+fast = "PSYCHO_CUT"
+charged = ["PSYSTRIKE", "AVALANCHE", "FUTURE_SIGHT_PLUS"]
+outside_movepool = true
+
+[[opponent]]
+label = "Kyurem White"
+species = "kyurem_white"
+fast = "DRAGON_BREATH"
+charged = ["FUSION_FLARE", "ICE_BURN"]
+
+[[opponent]]
+label = "Lugia"
+species = "lugia"
+fast = "DRAGON_TAIL"
+charged = ["AEROBLAST", "EARTH_POWER"]

@@ -22,6 +22,7 @@
 9. 待确认问题
 10. 自定义数据（覆盖文件）
 11. IV 排名
+12. 配招与对战配置（九宫格）
 
 ---
 
@@ -293,6 +294,13 @@ CP = max(floor((攻+IV) × sqrt(防+IV) × sqrt(HP+IV) × CPM² / 10), 10)
 - "时间"的算法：没有大招的回合 +0.5 秒；有大招的回合按大招小游戏计 10 秒，同回合的第二个大招再加 10 秒（有盾时的计法略有不同，见 `battle.py` 的 `_end_of_turn_ms`）。只用快招时第 481 回合超时。状态：大招期间对战计时继续走——已验证（用户实战经验，2026-11-18），与 PvPoke 的做法一致；每次大招具体计多少秒（10 秒）参考 PvPoke。
 - 对战评分 = floor(500 × 对手损失HP比例 + 500 × 自己剩余HP比例)，高者胜（`Pokemon.js` `getBattleRating`，第 2134 行）。
 - 这是 PvPoke 的评分方式，不是游戏规则。我们的引擎可以输出同样的评分，方便对比。
+- 换个写法更好理解：设 r自己、r对手 是双方剩余 HP 占最大 HP 的比例，评分 = 500 + 500 × (r自己 − r对手)（再向下取整）。所以：
+  - 双方评分加起来是 1000（取整可能差 1）；
+  - 一方倒下时，赢家 = 500 + 500 × 自己剩余 HP 比例（大于 500），输家 = 500 × 打掉对手 HP 的比例（小于 500）。例如赢下来只剩 10/361 HP 是 513，残血险胜；剩一半 HP 是 750；没掉血是 1000；输家 143 表示倒下前打掉了对手 28.6% 的 HP；
+  - 同一回合双方都倒下：都是 500，平局；
+  - 超时：剩余 HP 比例高的一方大于 500；
+  - 只看 HP，不看剩下的盾和能量（在 3v3 里这些也有价值，这里不算）。
+- 九宫格（`pogo_sim/matchups.py`）：一对宝可梦在 0–2 盾对 0–2 盾九种组合下各打一场的评分，和 PvPoke 单场对战页面的盾数矩阵一样。PvPoke 排名里的 score 是另一套加权算法，我们没有做。
 
 ---
 
@@ -346,6 +354,11 @@ PvPoke 目前的做法（都是 **参考 PvPoke**，其中多项它自己也说�
   ```
 - **第三个大招**：`make_combatant` 检查，只有带 `extraChargedMoves` 的 Mega 能带，而且第三个只能从 `extraChargedMoves` 里选（前两个不检查招式池，和以前一样）。gamemaster 里 64 只 Mega 中 19 只有（都是 supermega），其余 45 只现在最多两个大招。
 - **每队 Mega 数**：`check_team` 检查，3v3 时用。
+
+完整流程（第 2d 步）：覆盖文件 → `season_build` → `make_combatant` → `Battle` + `SimplePolicy` → 文字报告（`pogo_sim/report.py`：双方配置和 `notes`、结果一行，再接 `format_timeline`）。用法见 README。
+- 例子：Mega 雪妖女（Powder Snow / Avalanche、Shadow Ball、Avalanche+）对超级联盟的玛力露丽，各 2 盾，双方都用默认的简单规则策略。Mega 雪妖女赢（评分 578 : 421）：两次用 Avalanche+ 骗盾，最后用 Avalanche+ 收尾，这一下 52 点伤害含 Mega 等级 4 的 1.3 倍加成（Mega 等级 1 不加成是 40 点）。
+- 这个结果来自本项目的引擎和简单规则策略，没有 PvPoke 的结果可以对照（Mega 雪妖女不在 gamemaster 里）。用到的引擎部分已经分别和 PvPoke 核对过：Mega 专属招式加成（3.6 节）、Mega 带三个大招的对战（5.5 节，大师联盟的 Mega 超梦X）。
+- 测试：`tests/test_mega_1v1.py`。
 
 ---
 
@@ -598,6 +611,7 @@ print("\n".join(gm.custom_log))  # 每条改动一行，包括种族值怎么换
 | 文件 | 内容 | 依据 |
 |---|---|---|
 | `mega_froslass.toml` | Mega 雪妖女：正作 70/80/70/140/100/120 → 289/194/172（40 级满 IV CP 3753，不削弱）；招式池照抄雪妖女；`supermega`（默认 Mega 等级 4） | 正作能力值来自 Legends Z-A；**Mega 专属招式 `AVALANCHE_PLUS`（75 威力 / 35 能量）是假设的** |
+| `mega_zygarde.toml` | Mega 基格尔德：正作 216/70/91/216/85/100 → 只套公式 416/187/428，40 级满 IV CP 8052 ≥ 6000，乘 0.97 → 403/181/415；招式池照抄完全体基格尔德；`supermega`；专属招式 `NIHIL_LIGHT`（龙，130 威力 / 80 能量，`isMegaMove`） | 正作能力值来自 Legends Z-A；**Nihil Light 的 GO 数值是假设的**，套用 Mega 超梦X/Y 专属招式的 130 / 80；正作效果（能打到妖精、无视目标的能力变化）没有实现。大师联盟的测试见 `experiments/mega_zygarde_ml.toml` |
 | `moonblast_plus_mega_flag.toml` | 给 `MOONBLAST_PLUS` 补 `isMegaMove` | 假设，见 9.2 |
 
 ### 10.5 测试
@@ -653,3 +667,41 @@ PvPoke 还有一条：当前招式里有 RETURN（报恩）时下限是 2（净�
 - PvPoke 的 17 个用例（`tools/pvpoke_ref/export_iv_reference.js` 生成）：完整名次顺序、每个组合的等级一致；前 20 名的 CP、实际能力值、乘积浮点逐位相等。用例覆盖：各种 IV 下限、`levelFloor`（含排名为空）、小小杯、最佳伙伴 51 级、`supermega` 在 PvPoke 里的 52 级、大师联盟、种族攻击等于种族防御（乘积并列）。
 - Mega 雪妖女（覆盖文件）在超级联盟的排名。
 - 二分查找与逐级查找的 2000 个随机对比。
+
+---
+
+## 12. 配招与对战配置（九宫格）
+
+目标：换配招、对手、联盟、赛季规则、策略参数时只改配置文件，不改代码（和 PvPoke 的自定义一样）。
+
+### 12.1 配招和招式池
+`pogo_sim/moveset.py`。招式池以 gamemaster（含覆盖文件）为准：快招看 `fastMoves`，第 1、2 个大招看 `chargedMoves`（包括 `eliteMoves` 里的限定招式），第 3 个大招只能从 `extraChargedMoves` 里选（第 7 节）。Mega 专属招式放在第 1、2 个位置算招式池外。
+
+试招式池外的招有两种办法：
+- 覆盖文件里用 `patch_pokemon` 改招式池：适合"假设以后会加这个招"，所有对局都生效；
+- 对战配置里给这一套配招写 `outside_movepool = true`：只对这一套生效，报告里在名字后面加 `*`，并在配置说明里写明是哪个招。快招 / 大招的区分和第三个大招的规则照样检查。
+
+招式数值的赛季调整（威力、能量、能力变化）写成覆盖文件的 `patch_moves`（第 10 节），放进对战配置的 `custom_files`。
+
+### 12.2 对战配置文件
+`pogo_sim/matchups.py`，格式写在模块开头。TOML，内容是：覆盖文件、联盟（CP 上限）、赛季规则预设（`season.SEASON_PRESETS`：`pvpoke` / `mega_cap_52` / `mega_cap_55` / `mega_plus_2`）、简单规则策略的参数（`[policy]`，双方相同），以及一组测试对象 `[[subject]]` 和一组对手 `[[opponent]]`。每只写种类和配招，可选 `label`、IV、等级、挚友、Mega 等级；不写 IV 和等级时按赛季规则取 IV 排名第 1 和合法的最高等级（第 7 节 `season_build`）。
+
+写错的字段、类型、赛季名、策略参数名和取值都会报错；种类、招式、等级是否合法在建配置时检查，报错信息指出是哪一项。
+
+每个测试对象对每个对手打九宫格（6.5）。报告是 Markdown：设置、双方配置、总表（九场赢几场、平均评分）、每一对的九宫格。
+
+```bash
+.venv/bin/python -m tools.run_matchups experiments/mega_zygarde_ml.toml
+.venv/bin/python -m tools.run_matchups experiments/mega_zygarde_ml.toml --output docs/experiments/mega_zygarde_ml.md
+.venv/bin/python -m tools.run_matchups experiments/mega_zygarde_ml.toml --timeline "Bite + Bulldoze" "Mega Mewtwo Y (Avalanche)" 1 1
+```
+
+### 12.3 现有的对战配置
+| 文件 | 内容 | 结果 |
+|---|---|---|
+| `experiments/mega_zygarde_ml.toml` | Mega 基格尔德（三套配招）在大师联盟对原始盖欧卡、Mega 超梦Y（Thunderbolt / Ice Beam / 招式池外的 Avalanche）、酋雷姆（白）、洛奇亚 | `docs/experiments/mega_zygarde_ml.md` |
+
+结果来自本项目的引擎和简单规则策略，不是 PvPoke 的结果；配置里没有说明的对手配招来自 PvPoke 的排名推荐。
+
+### 12.4 测试
+`tests/test_moveset.py`：招式池检查的几种情况。`tests/test_matchups.py`：示例配置能加载、九宫格每一格等于直接打一场的评分、报告内容、策略和赛季参数、20 种写错配置的情况。
