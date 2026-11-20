@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a：引擎改成以队伍为单位（盾全队共用），1v1 是每队一只，换人还没做。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）和 3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）。3v3 的换人和开盾策略还没做（3v3-d），现在的简单规则策略不主动换人。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -18,8 +18,8 @@
   - `typechart.py`：属性克制表
   - `damage.py`：伤害公式
   - `combatant.py`：对战中的一只宝可梦（配置 `PokemonBuild` 和对战状态 `Combatant`）
-  - `team.py`：一方的队伍 `Team`（成员、在场的是哪只、全队共用的盾）
-  - `policy.py`：策略接口（出什么招、开不开盾）和剧本策略 `ScriptedPolicy`
+  - `team.py`：一方的队伍 `Team`（成员、在场的是哪只、全队共用的盾和换人冷却）
+  - `policy.py`：策略接口（出什么招、开不开盾、换不换人、倒下后换谁）和剧本策略 `ScriptedPolicy`
   - `simple_policy.py`：简单规则策略 `SimplePolicy`（规则和参数见文件开头）
   - `battle.py`：回合结算引擎（双方各一支队伍；1v1 是每队一只）
   - `timeline.py`：时间线事件、逐回合快照、文字日志
@@ -100,6 +100,47 @@ assert azumarill_policy.unused_charged() == [] and medicham_policy.unused_charge
 print(result)
 print(format_timeline(result.events, (azumarill.name, medicham.name)))
 ```
+
+## 3v3
+
+每队最多 3 只（第一只是首发），盾是全队共用的。换人的规则见 [docs/mechanics.md](docs/mechanics.md) 13.5 节。
+
+```python
+from pogo_sim.battle import Battle
+from pogo_sim.combatant import league_build, make_combatant
+from pogo_sim.gamemaster import load_gamemaster
+from pogo_sim.report import format_result
+from pogo_sim.simple_policy import SimplePolicy
+from pogo_sim.team import Team
+from pogo_sim.timeline import format_timeline, team_names
+
+gm = load_gamemaster()
+
+def team(index, *members):
+    return Team(tuple(make_combatant(gm, league_build(gm, s, 1500, f, c), index) for s, f, c in members), shields=2)
+
+a = team(0, ("azumarill", "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), ("medicham", "COUNTER", ("ICE_PUNCH", "PSYCHIC")),
+         ("registeel", "LOCK_ON", ("FOCUS_BLAST", "ZAP_CANNON")))
+b = team(1, ("swampert", "MUD_SHOT", ("HYDRO_CANNON", "EARTHQUAKE")), ("altaria", "DRAGON_BREATH", ("SKY_ATTACK", "MOONBLAST")),
+         ("trevenant", "SHADOW_CLAW", ("SEED_BOMB", "SHADOW_BALL")))
+result = Battle((a, b), (SimplePolicy(), SimplePolicy())).run()
+print(format_result(result, ("Team A", "Team B")))
+print(format_timeline(result.events, team_names((a, b))))
+```
+
+输出（节选）：
+
+```
+Team B wins: rating 435 vs 564, Pokemon left 0 vs 1, shields left 0 vs 0, 130 turns
+...
+T  53  Swampert        CHARGED HYDRO_CANNON -> 36 dmg, Azumarill HP 1, energy 13
+T  53  Azumarill       CHARGED ICE_BEAM -> 51 dmg, Swampert HP 0, energy 0
+T  53  Swampert        FAINTS
+T  54  Swampert        sends in Altaria
+...
+```
+
+按剧本换人（`ScriptedPolicy(switches={回合: 换上第几只}, replacements=...)`）可以复现某一场的具体过程。评分是本项目的口径：把 PvPoke 的 1v1 评分推广到全队（第 13.2 节 D1）。
 
 ## 自定义宝可梦和招式
 

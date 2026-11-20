@@ -12,6 +12,8 @@
 
 开盾：见 SimplePolicyConfig.shielding。
 
+换人：这一版不主动换人（3v3 的换人策略在 3v3-d）；在场的倒下后，换上队伍里排在最前、还没倒下的那只。
+
 假设：双方信息完全公开（HP、能量、盾数、冷却），伤害按当前能力等级计算——和 PvPoke 一样。
 只看双方在场的那只，不考虑后备（3v3 的策略见 3v3-d）。
 这是有意做得简单的基准策略：PvPoke 的 AI 有更细的计算（mechanics.md 第 8 节），
@@ -25,7 +27,16 @@ from typing import Literal
 from pogo_sim.combatant import Combatant
 from pogo_sim.damage import calculate_damage
 from pogo_sim.gamemaster import Move
-from pogo_sim.policy import BattleView, ChargedAction, Decision, FastAction, ShieldDecision
+from pogo_sim.policy import (
+    BattleView,
+    ChargedAction,
+    Decision,
+    FastAction,
+    Replacement,
+    ShieldDecision,
+    SwitchDecision,
+    first_available,
+)
 from pogo_sim.rules import BattleRules
 
 
@@ -185,6 +196,14 @@ class SimplePolicy:
             return None  # 等的时候可能被快招打倒
 
         return f"opponent's fast move is not about to finish (its cooldown {opponent.cooldown})"
+
+    # ---- 换人 ----
+
+    def decide_zero_turn_switch(self, view: BattleView) -> SwitchDecision:
+        return SwitchDecision(None, "simple policy never switches by choice")
+
+    def choose_replacement(self, view: BattleView) -> Replacement:
+        return Replacement(first_available(view.my_team), 0, "next in team order")
 
     # ---- 开盾 ----
 

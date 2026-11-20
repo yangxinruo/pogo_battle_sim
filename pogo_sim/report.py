@@ -62,9 +62,10 @@ def format_setup(teams: Sequence[Team]) -> str:
 
 
 def format_result(result: BattleResult, names: tuple[str, str]) -> str:
-    """一行结果：谁赢、对战评分、剩余 HP、回合数。
+    """一行结果：谁赢、对战评分、剩余 HP（1v1）或剩余只数（3v3）、回合数。
 
-    对战评分是 PvPoke 的口径（battle.battle_rating），不是游戏规则。
+    names 是双方的名字（1v1 用宝可梦名，3v3 用队伍名）。
+    对战评分是本项目的口径（battle.team_rating，每队一只时就是 PvPoke 的评分），不是游戏规则。
     回合数不含大招暂停的时间，所以不换算成秒。
     """
     if result.winner is None:
@@ -73,7 +74,12 @@ def format_result(result: BattleResult, names: tuple[str, str]) -> str:
         outcome = f"{names[result.winner]} wins"
     last = result.snapshots[-1].sides if result.snapshots else None
     hp_text = ""
-    if last is not None:
+    if last is not None and len(last[0].member_hp) > 1:
+        hp_text = (
+            f", Pokemon left {result.remaining[0]} vs {result.remaining[1]}"
+            f", shields left {result.shields_left[0]} vs {result.shields_left[1]}"
+        )
+    elif last is not None:
         hp_text = f", HP left {last[0].hp} vs {last[1].hp}"
     timeout = " (time limit reached)" if result.timed_out else ""
     return (

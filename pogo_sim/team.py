@@ -1,7 +1,8 @@
-"""一方的队伍：成员、在场的是哪只、全队共用的盾。
+"""一方的队伍：成员、在场的是哪只、全队共用的盾、换人冷却。
 
 1v1 就是每队一只：Team((azumarill,), shields=2)。
-盾属于队伍而不是单只宝可梦：3v3 里全队共用 2 个盾（docs/mechanics.md 6.1、13.4）。
+盾和换人冷却属于队伍而不是单只宝可梦：3v3 里全队共用 2 个盾，换人冷却也是全队一个
+（docs/mechanics.md 6.1、13.4、13.5）。
 
 队伍的状态只由 battle 模块修改；策略（policy）只读。
 """
@@ -16,6 +17,7 @@ class Team:
     members: tuple[Combatant, ...]  # 按出场顺序：第一只是首发
     shields: int  # 全队剩余的盾
     active: int = 0  # 在场的是 members 里的第几只
+    switch_timer_ms: int = 0  # 换人冷却还剩多少毫秒；0 表示可以主动换人
 
     def __post_init__(self) -> None:
         if not self.members:
@@ -35,6 +37,19 @@ class Team:
     def active_member(self) -> Combatant:
         """在场的那只。"""
         return self.members[self.active]
+
+    def bench_slots(self) -> tuple[int, ...]:
+        """后备里没倒下的那几只（members 的下标，按出场顺序）。"""
+        return tuple(
+            slot
+            for slot, member in enumerate(self.members)
+            if slot != self.active and not member.is_fainted
+        )
+
+    @property
+    def can_switch(self) -> bool:
+        """能不能主动换人：换人冷却为 0，而且后备里有没倒下的。"""
+        return self.switch_timer_ms == 0 and bool(self.bench_slots())
 
     @property
     def remaining(self) -> int:

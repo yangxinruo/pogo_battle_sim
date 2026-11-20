@@ -1,6 +1,6 @@
 """队伍结构（3v3-a）：盾属于队伍，策略看到双方的队伍；1v1 就是每队一只。
 
-换人还没实现（3v3-b），所以多于一只的队伍现在只能建，不能拿去对战。
+换人的规则见 tests/test_switch.py。
 """
 
 import pytest
@@ -35,10 +35,15 @@ def test_team_basics(gm: GameMaster) -> None:
     assert team.index == 1
     assert team.active == 0 and team.active_member is members[0]  # 第一只是首发
     assert team.remaining == 3 and not team.is_defeated
+    assert team.bench_slots() == (1, 2) and team.can_switch
+    team.switch_timer_ms = 500
+    assert not team.can_switch  # 换人冷却没走完
+    team.switch_timer_ms = 0
 
     members[0].hp = 0
     members[2].hp = 0
     assert team.remaining == 1 and not team.is_defeated
+    assert team.bench_slots() == (1,)  # 在场的倒下了也不算后备
     members[1].hp = 0
     assert team.is_defeated
 
@@ -86,6 +91,6 @@ def test_battle_checks_teams(gm: GameMaster) -> None:
         Battle((Team((b,), 0), Team((a,), 0)), policies)
     with pytest.raises(ValueError, match="盾数必须是 0 到 2"):
         Battle((Team((a,), 3), Team((b,), 0)), policies)
-    # 换人在 3v3-b 实现，在那之前多于一只的队伍不能对战
-    with pytest.raises(NotImplementedError, match="3v3-b"):
-        Battle((Team(_three(gm, 0), 2), Team((b,), 0)), policies)
+    four = (*_three(gm, 0), _great_league(gm, 0, "swampert", "MUD_SHOT", ("HYDRO_CANNON",)))
+    with pytest.raises(ValueError, match="每队最多 3 只"):
+        Battle((Team(four, 2), Team((b,), 0)), policies)

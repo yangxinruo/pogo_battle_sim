@@ -102,6 +102,8 @@ def test_format_result_draw_and_timeout() -> None:
         turns=480,
         elapsed_ms=240_500,
         timed_out=True,
+        remaining=(1, 1),
+        shields_left=(0, 0),
         events=[],
         snapshots=[TurnSnapshot(480, (snapshot, snapshot))],
     )

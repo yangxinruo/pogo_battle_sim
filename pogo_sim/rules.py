@@ -75,6 +75,36 @@ class BattleRules:
     # 剧本策略可以逐次指定是否触发，此时不看这个开关。
     chance_effects: Literal["pvpoke_counter", "random"] = "pvpoke_counter"
 
+    # ---- 3v3：队伍和换人（docs/mechanics.md 第 13 节）----
+    # 每队最多几只。GBL：首发 + 2 后备（用户确认，D6）。
+    max_team_size: int = 3
+
+    # 换人冷却：主动换人（包括 0 回合换人）后多久才能再换；倒下后的换人不触发。
+    # 来源：PvPoke Player.js switchTime = 45000。状态：参考 PvPoke（Q14，用户同意）。
+    # 冷却按对战时间走：普通回合 turn_ms，大招按 charged_move_ms（大招期间照走，Q13），
+    # 倒下后选人等的时间也算（policy.Replacement.wait_ms）。
+    switch_cooldown_ms: int = 45000
+
+    # 倒下后选人最多等多久。来源：PvPoke 训练模式 13 秒后自动换上。状态：参考 PvPoke（Q14）。
+    max_replacement_wait_ms: int = 13000
+
+    # 大招后的空回合 0 回合换人时，"漂浮"的快招打在谁身上（Q3）。
+    #   "outgoing"：先结算漂浮快招，打在换下去的那只身上（PvPoke：这时换人优先级 −40）
+    #   "incoming"：先换人，漂浮快招打在换上来的那只身上（官方说明字面："换人总是先于伤害结算"）
+    zero_turn_switch_floating_fast_hits: Literal["outgoing", "incoming"] = "outgoing"
+
+    # 对手倒下、正在换人的那一回合，存活的一方能不能同时换人（不花回合）。
+    # 可以，不花回合，但要求换人冷却为 0（冷却中不能换）。PvPoke 相同（这一回合存活的一方不出招，
+    # 但换人照样处理）。状态：用户确认（2026-11-19，Q21）。
+    # 大招后的空回合本来就能 0 回合换人（Q15），不受这个开关影响。
+    switch_during_opponent_replacement: bool = True
+
+    # 时间到、双方都还有宝可梦时谁赢（Q19）。评分（ratings）不受影响，总是照算。
+    #   "draw"：平局（游戏规则，用户确认 2026-11-19）
+    #   "more_remaining"：剩余只数多的赢，相同则平局（评估用）
+    #   "rating"：对战评分高的赢（PvPoke 1v1 模拟的做法；评估用）
+    timeout_result: Literal["draw", "more_remaining", "rating"] = "draw"
+
 
 # 与 PvPoke 行为一致的默认规则。回归测试都用它。
 PVPOKE_COMPAT = BattleRules()
