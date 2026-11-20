@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a：引擎改成以队伍为单位（盾全队共用），1v1 是每队一只，换人还没做。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -18,9 +18,10 @@
   - `typechart.py`：属性克制表
   - `damage.py`：伤害公式
   - `combatant.py`：对战中的一只宝可梦（配置 `PokemonBuild` 和对战状态 `Combatant`）
+  - `team.py`：一方的队伍 `Team`（成员、在场的是哪只、全队共用的盾）
   - `policy.py`：策略接口（出什么招、开不开盾）和剧本策略 `ScriptedPolicy`
   - `simple_policy.py`：简单规则策略 `SimplePolicy`（规则和参数见文件开头）
-  - `battle.py`：1v1 回合结算引擎
+  - `battle.py`：回合结算引擎（双方各一支队伍；1v1 是每队一只）
   - `timeline.py`：时间线事件、逐回合快照、文字日志
   - `report.py`：对战报告的文字部分（双方配置和配置说明、结果一行）
   - `moveset.py`：配招和招式池检查
@@ -53,14 +54,16 @@ from pogo_sim.battle import Battle
 from pogo_sim.combatant import league_build, make_combatant
 from pogo_sim.gamemaster import load_gamemaster
 from pogo_sim.simple_policy import SimplePolicy, SimplePolicyConfig
+from pogo_sim.team import Team
 from pogo_sim.timeline import format_timeline
 
 gm = load_gamemaster()
-azumarill = make_combatant(gm, league_build(gm, "azumarill", 1500, "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), 0, shields=2)
-medicham = make_combatant(gm, league_build(gm, "medicham", 1500, "COUNTER", ("ICE_PUNCH", "PSYCHIC")), 1, shields=2)
+azumarill = make_combatant(gm, league_build(gm, "azumarill", 1500, "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), 0)  # 0：第 0 方
+medicham = make_combatant(gm, league_build(gm, "medicham", 1500, "COUNTER", ("ICE_PUNCH", "PSYCHIC")), 1)
+teams = (Team((azumarill,), shields=2), Team((medicham,), shields=2))  # 1v1：每队一只；盾属于队伍
 
 no_bait = SimplePolicyConfig(bait_shields=False)  # 每个规则都可以单独调
-result = Battle((azumarill, medicham), (SimplePolicy(), SimplePolicy(no_bait))).run()
+result = Battle(teams, (SimplePolicy(), SimplePolicy(no_bait))).run()
 print(result)
 print(format_timeline(result.events, (azumarill.name, medicham.name), show_decisions=True))
 ```
@@ -73,11 +76,12 @@ from pogo_sim.combatant import PokemonBuild, make_combatant
 from pogo_sim.gamemaster import load_gamemaster
 from pogo_sim.policy import ScriptedCharged, ScriptedPolicy
 from pogo_sim.stats import IVs
+from pogo_sim.team import Team
 from pogo_sim.timeline import format_timeline
 
 gm = load_gamemaster()
-azumarill = make_combatant(gm, PokemonBuild("azumarill", 43, IVs(4, 15, 13), "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), 0, shields=1)
-medicham = make_combatant(gm, PokemonBuild("medicham", 49, IVs(7, 15, 14), "COUNTER", ("ICE_PUNCH", "PSYCHIC")), 1, shields=1)
+azumarill = make_combatant(gm, PokemonBuild("azumarill", 43, IVs(4, 15, 13), "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), 0)
+medicham = make_combatant(gm, PokemonBuild("medicham", 49, IVs(7, 15, 14), "COUNTER", ("ICE_PUNCH", "PSYCHIC")), 1)
 
 # 剧本（来自 PvPoke 这一对局 1 盾对 1 盾的实际过程）：
 #   第 21 回合 Medicham 放 Psychic，Azumarill 开盾；第 26 回合 Azumarill 放 Ice Beam，Medicham 开盾；
@@ -90,7 +94,8 @@ medicham_policy = ScriptedPolicy(
     charged={21: ScriptedCharged(21, "PSYCHIC"), 43: ScriptedCharged(43, "PSYCHIC")},
     shields={26: True},
 )
-result = Battle((azumarill, medicham), (azumarill_policy, medicham_policy)).run()
+teams = (Team((azumarill,), shields=1), Team((medicham,), shields=1))
+result = Battle(teams, (azumarill_policy, medicham_policy)).run()
 assert azumarill_policy.unused_charged() == [] and medicham_policy.unused_charged() == []
 print(result)
 print(format_timeline(result.events, (azumarill.name, medicham.name)))
@@ -184,15 +189,17 @@ from pogo_sim.gamemaster import load_gamemaster
 from pogo_sim.report import format_result, format_setup
 from pogo_sim.season import season_build
 from pogo_sim.simple_policy import SimplePolicy
+from pogo_sim.team import Team
 from pogo_sim.timeline import format_timeline
 
 gm = load_gamemaster(custom_files=["data/custom/mega_froslass.toml"])
-froslass = make_combatant(gm, season_build(gm, "froslass_mega", 1500, "POWDER_SNOW", ["AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"]), 0, shields=2)
-azumarill = make_combatant(gm, season_build(gm, "azumarill", 1500, "BUBBLE", ["ICE_BEAM", "PLAY_ROUGH"]), 1, shields=2)
+froslass = make_combatant(gm, season_build(gm, "froslass_mega", 1500, "POWDER_SNOW", ["AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"]), 0)
+azumarill = make_combatant(gm, season_build(gm, "azumarill", 1500, "BUBBLE", ["ICE_BEAM", "PLAY_ROUGH"]), 1)
+teams = (Team((froslass,), shields=2), Team((azumarill,), shields=2))
 names = (froslass.name, azumarill.name)
 
-print(format_setup((froslass, azumarill)))  # 要在对战开始前调用：盾数会在对战中变化
-result = Battle((froslass, azumarill), (SimplePolicy(), SimplePolicy())).run()
+print(format_setup(teams))  # 要在对战开始前调用：盾数会在对战中变化
+result = Battle(teams, (SimplePolicy(), SimplePolicy())).run()
 print(format_result(result, names))
 print(format_timeline(result.events, names, show_decisions=True))
 ```

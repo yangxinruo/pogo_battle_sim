@@ -1,4 +1,7 @@
-"""1v1 对战引擎：按回合结算（docs/mechanics.md 第 5 节）。
+"""对战引擎：按回合结算（docs/mechanics.md 第 5 节）。
+
+双方各是一支队伍（team.Team），每回合由双方在场的那只交手；盾是全队共用的。
+1v1 就是每队一只。
 
 每回合的步骤与 PvPoke battle/Battle.js 的 step() 一致：
 1. 冷却减少：双方冷却各减 1 回合。
@@ -13,7 +16,7 @@
 引擎从不自己做决定：出招和开盾都问策略（policy.py），原因写进时间线。
 状态：参考 PvPoke，已用 PvPoke 源码的对战记录逐回合核对（tests/test_battle_pvpoke.py）。
 
-暂不支持：换人（3v3 才需要）、形态变化、Gulp Missile 之类的特殊招式。
+暂不支持：换人（3v3-b 实现；在那之前每队只能有一只）、形态变化、Gulp Missile 之类的特殊招式。
 """
 
 import random
@@ -26,6 +29,7 @@ from pogo_sim.damage import calculate_damage
 from pogo_sim.gamemaster import Move
 from pogo_sim.policy import BattleView, ChargedAction, FastAction, Policy
 from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
+from pogo_sim.team import Team
 from pogo_sim.timeline import (
     CancelledEvent,
     DecisionEvent,
@@ -85,30 +89,39 @@ def battle_rating(me: Combatant, opponent: Combatant) -> int:
     return floor((500 * lost) + (500 * remaining))
 
 
-def _snapshot(side: Combatant) -> SideSnapshot:
+def _snapshot(team: Team) -> SideSnapshot:
+    active = team.active_member
     return SideSnapshot(
-        hp=side.hp,
-        energy=side.energy,
-        cooldown=side.cooldown,
-        atk_stage=side.atk_stage,
-        def_stage=side.def_stage,
-        shields=side.shields,
+        hp=active.hp,
+        energy=active.energy,
+        cooldown=active.cooldown,
+        atk_stage=active.atk_stage,
+        def_stage=active.def_stage,
+        shields=team.shields,
     )
 
 
 class Battle:
-    """一场 1v1。用 run() 一次跑完，或者反复调用 play_turn() 逐回合推进。"""
+    """一场对战。用 run() 一次跑完，或者反复调用 play_turn() 逐回合推进。
+
+    teams 依次是第 0 方和第 1 方的队伍；policies 是双方的策略，顺序相同。
+    """
 
     def __init__(
         self,
-        combatants: tuple[Combatant, Combatant],
+        teams: tuple[Team, Team],
         policies: tuple[Policy, Policy],
         rules: BattleRules = PVPOKE_COMPAT,
         seed: int | None = None,
     ) -> None:
-        if combatants[0].index != 0 or combatants[1].index != 1:
-            raise ValueError("combatants 的 index 必须依次是 0 和 1")
-        self.sides = combatants
+        if teams[0].index != 0 or teams[1].index != 1:
+            raise ValueError("teams 的成员必须依次属于第 0 方和第 1 方（Combatant.index）")
+        for team in teams:
+            if not 0 <= team.shields <= rules.max_shields:
+                raise ValueError(f"盾数必须是 0 到 {rules.max_shields}，得到 {team.shields}")
+            if len(team.members) != 1:
+                raise NotImplementedError("换人还没实现（3v3-b），现在每队只能有一只")
+        self.teams = teams
         self.policies = policies
         self.rules = rules
         self.rng = random.Random(seed)  # 只有开关设成 "random" 时才会用到
@@ -127,13 +140,17 @@ class Battle:
             self.play_turn()
         return self.result()
 
+    def active(self, index: int) -> Combatant:
+        """第 index 方在场的那只。"""
+        return self.teams[index].active_member
+
     def is_over(self) -> bool:
-        if any(side.is_fainted for side in self.sides):
+        if any(team.is_defeated for team in self.teams):
             return True
         return self.elapsed_ms > self.rules.time_limit_ms
 
     def result(self) -> BattleResult:
-        a, b = self.sides
+        a, b = self.active(0), self.active(1)
         ratings = (battle_rating(a, b), battle_rating(b, a))
         if ratings[0] > ratings[1]:
             winner = 0
@@ -146,7 +163,7 @@ class Battle:
             ratings=ratings,
             turns=self.turn - 1,
             elapsed_ms=self.elapsed_ms,
-            timed_out=not any(side.is_fainted for side in self.sides),
+            timed_out=not any(team.is_defeated for team in self.teams),
             events=self.events,
             snapshots=self.snapshots,
         )
@@ -156,8 +173,8 @@ class Battle:
         turn = self.turn
 
         # 1. 冷却减少
-        for side in self.sides:
-            side.cooldown = max(0, side.cooldown - 1)
+        for team in self.teams:
+            team.active_member.cooldown = max(0, team.active_member.cooldown - 1)
 
         # 2. 决定行动
         self._decide_actions(turn)
@@ -177,29 +194,31 @@ class Battle:
         if clock.charged_used > 0:
             # 大招之后双方冷却都设为 1：下一回合是空回合，再下一回合双方同时恢复行动。
             # 来源：Battle.js step() 末尾 poke.cooldown = 500。
-            for side in self.sides:
-                side.cooldown = 1
-        for side in self.sides:
-            if side.is_fainted:
-                self.events.append(FaintEvent(turn, side.index))
-        self.snapshots.append(TurnSnapshot(turn, (_snapshot(self.sides[0]), _snapshot(self.sides[1]))))
+            for team in self.teams:
+                team.active_member.cooldown = 1
+        for team in self.teams:
+            if team.active_member.is_fainted:
+                self.events.append(FaintEvent(turn, team.index))
+        self.snapshots.append(TurnSnapshot(turn, (_snapshot(self.teams[0]), _snapshot(self.teams[1]))))
         self.turn += 1
 
     # ---- 第 2 步：决定行动 ----
 
     def _decide_actions(self, turn: int) -> None:
         # 先记下新的冷却，等双方都决定完再一起设置：后决定的一方看到的仍是回合开始时的状态。
-        new_cooldowns = [side.cooldown for side in self.sides]
+        sides = (self.active(0), self.active(1))
+        new_cooldowns = [side.cooldown for side in sides]
 
-        for side in self.sides:
+        for side in sides:
             if side.cooldown != 0:
                 continue
             if self.charged_last_turn:
-                # 大招后的空回合：只允许换人（1v1 没有换人），所以不问策略。
+                # 大招后的空回合：只允许换人（还没实现，3v3-b），所以不问策略。
                 continue
 
-            opponent = self.sides[1 - side.index]
-            decision = self.policies[side.index].decide_action(BattleView(turn, side, opponent, self.rules))
+            opponent = sides[1 - side.index]
+            view = BattleView(turn, self.teams[side.index], self.teams[opponent.index], self.rules)
+            decision = self.policies[side.index].decide_action(view)
 
             if isinstance(decision.action, FastAction):
                 move = side.fast_move
@@ -225,7 +244,7 @@ class Battle:
             else:
                 raise TypeError(f"不认识的行动：{decision.action!r}")
 
-        for side, cooldown in zip(self.sides, new_cooldowns):
+        for side, cooldown in zip(sides, new_cooldowns):
             side.cooldown = cooldown
 
     @staticmethod
@@ -272,14 +291,14 @@ class Battle:
 
         PvPoke：双方 CMP 攻击不同才有先后；相同则双方都生效（usePriority = false）。
         """
-        attack_0, attack_1 = (side.cmp_attack(self.rules) for side in self.sides)
+        attack_0, attack_1 = (self.active(index).cmp_attack(self.rules) for index in (0, 1))
         return attack_0 != attack_1 or self.rules.cmp_tie == "random"
 
     # ---- 第 5 步：结算 ----
 
     def _resolve(self, action: _QueuedAction, turn: int, clock: _TurnClock) -> None:
-        me = self.sides[action.actor]
-        opponent = self.sides[1 - action.actor]
+        me = self.active(action.actor)
+        opponent = self.active(1 - action.actor)
 
         # 有效性检查。来源：Battle.js step() 里 switch(action.type) 的部分。
         cancel_reason = None
@@ -343,14 +362,15 @@ class Battle:
 
         shielded = False
         shield_reason = None
-        if opponent.shields > 0 and "instant" not in move.tags:
-            view = BattleView(turn, me=opponent, opponent=me, rules=self.rules)
+        defender_team = self.teams[opponent.index]
+        if defender_team.shields > 0 and "instant" not in move.tags:
+            view = BattleView(turn, defender_team, self.teams[me.index], self.rules)
             decision = self.policies[opponent.index].decide_shield(view, move, damage)
             shield_reason = decision.reason
             if decision.use_shield:
                 shielded = True
                 damage = self.rules.shielded_damage
-                opponent.shields -= 1
+                defender_team.shields -= 1
                 if clock.charged_used == 0:
                     clock.extra_ms += self.rules.charged_move_ms
                 clock.shield_used = True

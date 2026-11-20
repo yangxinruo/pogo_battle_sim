@@ -18,6 +18,7 @@ from pogo_sim.gamemaster import GameMaster, load_gamemaster
 from pogo_sim.report import format_combatant, format_result, format_setup
 from pogo_sim.season import season_build
 from pogo_sim.simple_policy import SimplePolicy
+from pogo_sim.team import Team
 from pogo_sim.timeline import MoveEvent, SideSnapshot, TurnSnapshot, format_timeline
 
 MEGA_FROSLASS_FILE = CUSTOM_DATA_DIR / "mega_froslass.toml"
@@ -29,47 +30,44 @@ def gm() -> GameMaster:
     return load_gamemaster(custom_files=[MEGA_FROSLASS_FILE])
 
 
-def _froslass_vs_azumarill(gm: GameMaster) -> tuple[Combatant, Combatant]:
-    froslass = make_combatant(
-        gm, season_build(gm, "froslass_mega", 1500, "POWDER_SNOW", FROSLASS_MOVES), 0, shields=2
-    )
-    azumarill = make_combatant(
-        gm, season_build(gm, "azumarill", 1500, "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), 1, shields=2
-    )
-    return froslass, azumarill
+def _froslass_vs_azumarill(gm: GameMaster) -> tuple[Team, Team]:
+    """各 2 盾。"""
+    froslass = make_combatant(gm, season_build(gm, "froslass_mega", 1500, "POWDER_SNOW", FROSLASS_MOVES), 0)
+    azumarill = make_combatant(gm, season_build(gm, "azumarill", 1500, "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), 1)
+    return Team((froslass,), shields=2), Team((azumarill,), shields=2)
 
 
 def test_setup_shows_build_and_notes(gm: GameMaster) -> None:
-    froslass, azumarill = _froslass_vs_azumarill(gm)
-    assert format_combatant(froslass).splitlines() == [
+    teams = _froslass_vs_azumarill(gm)
+    froslass = teams[0].active_member
+    assert format_combatant(froslass, shields=2).splitlines() == [
         "[0] Froslass (Mega)  CP 1498  level 14.5  IV 4/15/15  Mega level 4  shields 2",
         f"    HP 95  atk {froslass.stats.atk:.2f}  def {froslass.stats.def_:.2f}",
         "    fast POWDER_SNOW  charged AVALANCHE, SHADOW_BALL, AVALANCHE_PLUS",
         "    build notes:",
         *(f"      {note}" for note in froslass.build.notes),
     ]
-    setup = format_setup((froslass, azumarill))
+    setup = format_setup(teams)
     assert "\n\n[1] Azumarill  CP 1499  level 45.5  IV 0/15/15  shields 2\n" in setup
     assert "      等级 45.5：CP 不超过 1500 的最高等级（CP 1499）" in setup
 
 
 def test_build_without_notes_has_no_notes_section(gm: GameMaster) -> None:
-    medicham = make_combatant(
-        gm, league_build(gm, "medicham", 1500, "COUNTER", ("ICE_PUNCH", "PSYCHIC")), 1, shields=1
-    )
-    text = format_combatant(medicham)
+    medicham = make_combatant(gm, league_build(gm, "medicham", 1500, "COUNTER", ("ICE_PUNCH", "PSYCHIC")), 1)
+    text = format_combatant(medicham, shields=1)
     assert "build notes" not in text
     assert "Mega level" not in text  # 不是 Mega
     assert text.splitlines()[0].endswith("shields 1")
 
 
 def test_mega_froslass_1v1(gm: GameMaster) -> None:
-    froslass, azumarill = _froslass_vs_azumarill(gm)
+    teams = _froslass_vs_azumarill(gm)
+    froslass, azumarill = teams[0].active_member, teams[1].active_member
     names = (froslass.name, azumarill.name)
     # 对战前记下双方状态，用来算"没被挡下时应有的伤害"（对战中能力等级不变：这几个招式都没有能力变化）
     froslass_side, azumarill_side = froslass.damage_side(), azumarill.damage_side()
 
-    result = Battle((froslass, azumarill), (SimplePolicy(), SimplePolicy())).run()
+    result = Battle(teams, (SimplePolicy(), SimplePolicy())).run()
 
     # 本项目引擎的结果（回归用，不是 PvPoke 的结果）
     assert format_result(result, names) == (

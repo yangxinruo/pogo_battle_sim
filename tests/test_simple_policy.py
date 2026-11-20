@@ -3,7 +3,7 @@
 场景主要是超级联盟默认配置的 Azumarill（Bubble 3 回合；Ice Beam 55 能量 / Play Rough 60 能量）
 对 Medicham（Counter 2 回合；Ice Punch 40 / Psychic 55）。
 对 Medicham：Ice Beam 40 伤害，Play Rough 76 伤害，Bubble 5 伤害；Medicham 的 Counter 打 Azumarill 4 伤害。
-需要特定局面时直接改双方的 HP / 能量 / 盾 / 冷却。
+需要特定局面时直接改双方的 HP / 能量 / 冷却；盾数在 _decide 里给（盾属于队伍）。
 """
 
 from dataclasses import replace
@@ -15,6 +15,7 @@ from pogo_sim.combatant import Combatant, league_build, make_combatant
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
 from pogo_sim.policy import BattleView, ChargedAction, Decision, FastAction
 from pogo_sim.simple_policy import SimplePolicy, SimplePolicyConfig
+from pogo_sim.team import Team
 
 # 只测某一条规则时，把出招时机和骗盾关掉，免得干扰
 PLAIN = SimplePolicyConfig(optimize_timing=False, bait_shields=False)
@@ -26,7 +27,7 @@ def gm() -> GameMaster:
 
 
 def _great_league(gm: GameMaster, index: int, species: str, fast: str, charged: tuple[str, ...]) -> Combatant:
-    return make_combatant(gm, league_build(gm, species, 1500, fast, charged), index, shields=0)
+    return make_combatant(gm, league_build(gm, species, 1500, fast, charged), index)
 
 
 @pytest.fixture
@@ -39,8 +40,15 @@ def medicham(gm: GameMaster) -> Combatant:
     return _great_league(gm, 1, "medicham", "COUNTER", ("ICE_PUNCH", "PSYCHIC"))
 
 
-def _decide(config: SimplePolicyConfig, me: Combatant, opponent: Combatant) -> Decision:
-    return SimplePolicy(config).decide_action(BattleView(turn=1, me=me, opponent=opponent))
+def _view(me: Combatant, opponent: Combatant, my_shields: int = 0, opponent_shields: int = 0) -> BattleView:
+    """1v1 的局面：每队一只。"""
+    return BattleView(turn=1, my_team=Team((me,), my_shields), opponent_team=Team((opponent,), opponent_shields))
+
+
+def _decide(
+    config: SimplePolicyConfig, me: Combatant, opponent: Combatant, opponent_shields: int = 0
+) -> Decision:
+    return SimplePolicy(config).decide_action(_view(me, opponent, opponent_shields=opponent_shields))
 
 
 def _move_of(decision: Decision) -> str:
@@ -96,9 +104,8 @@ def test_rule4_cheapest_lethal_move(azumarill: Combatant, medicham: Combatant) -
 
 def test_rule4_not_used_when_opponent_has_shields(azumarill: Combatant, medicham: Combatant) -> None:
     medicham.hp = 30
-    medicham.shields = 1
     azumarill.energy = 55
-    decision = _decide(PLAIN, azumarill, medicham)
+    decision = _decide(PLAIN, azumarill, medicham, opponent_shields=1)
     assert _move_of(decision) == "fast"
     assert decision.reason.startswith("saving for PLAY_ROUGH")
 
@@ -157,8 +164,7 @@ def test_rule6_window_widens_with_common_divisor(
 
 def test_rule7_bait(azumarill: Combatant, medicham: Combatant) -> None:
     azumarill.energy = 60
-    medicham.shields = 1
-    decision = _decide(replace(PLAIN, bait_shields=True), azumarill, medicham)
+    decision = _decide(replace(PLAIN, bait_shields=True), azumarill, medicham, opponent_shields=1)
     assert _move_of(decision) == "ICE_BEAM"
     assert decision.reason.startswith("bait")
 
@@ -179,9 +185,8 @@ def test_rule7_bait(azumarill: Combatant, medicham: Combatant) -> None:
 def test_shield_decision(
     gm: GameMaster, azumarill: Combatant, medicham: Combatant, shielding: str, damage: int, expected: bool
 ) -> None:
-    medicham.shields = 1
     policy = SimplePolicy(SimplePolicyConfig(shielding=shielding, shield_hp_fraction=0.5))
-    view = BattleView(turn=1, me=medicham, opponent=azumarill)
+    view = _view(medicham, azumarill, my_shields=1)
     decision = policy.decide_shield(view, gm.get_move("PLAY_ROUGH"), damage)
     assert decision.use_shield is expected
     assert decision.reason
@@ -192,9 +197,9 @@ def test_shield_decision(
 
 def test_full_battle_is_deterministic(gm: GameMaster) -> None:
     def run() -> tuple:
-        a = make_combatant(gm, league_build(gm, "azumarill", 1500, "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), 0, 2)
-        b = make_combatant(gm, league_build(gm, "medicham", 1500, "COUNTER", ("ICE_PUNCH", "PSYCHIC")), 1, 2)
-        result = Battle((a, b), (SimplePolicy(), SimplePolicy())).run()
+        a = make_combatant(gm, league_build(gm, "azumarill", 1500, "BUBBLE", ("ICE_BEAM", "PLAY_ROUGH")), 0)
+        b = make_combatant(gm, league_build(gm, "medicham", 1500, "COUNTER", ("ICE_PUNCH", "PSYCHIC")), 1)
+        result = Battle((Team((a,), 2), Team((b,), 2)), (SimplePolicy(), SimplePolicy())).run()
         return result.ratings, result.turns, len(result.events)
 
     assert run() == run()

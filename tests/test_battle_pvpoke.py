@@ -7,10 +7,11 @@
 import pytest
 
 from pogo_sim.battle import Battle, BattleResult
-from pogo_sim.combatant import Combatant, PokemonBuild, league_build, make_combatant
+from pogo_sim.combatant import PokemonBuild, league_build, make_combatant
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
 from pogo_sim.policy import ScriptedCharged, ScriptedPolicy
 from pogo_sim.stats import IVs
+from pogo_sim.team import Team
 from pogo_sim.timeline import MoveEvent, TurnSnapshot
 from tests.pvpoke_reference import load_battle_reference
 
@@ -23,7 +24,8 @@ def gm() -> GameMaster:
     return load_gamemaster()
 
 
-def _make_combatants(gm: GameMaster, battle: dict) -> tuple[Combatant, Combatant]:
+def _make_teams(gm: GameMaster, battle: dict) -> tuple[Team, Team]:
+    """1v1：每队一只，盾数照参考数据。"""
     sides = []
     for index, spec in enumerate(battle["pokemon"]):
         build = PokemonBuild(
@@ -34,11 +36,11 @@ def _make_combatants(gm: GameMaster, battle: dict) -> tuple[Combatant, Combatant
             charged_move_ids=tuple(spec["charged"]),
             mega_level=spec["mega_level"],
         )
-        combatant = make_combatant(gm, build, index, spec["shields"])
+        combatant = make_combatant(gm, build, index)
         # 先确认配置本身一致，否则后面的比较没有意义
         assert combatant.cp == spec["cp"]
         assert combatant.stats.hp == spec["hp"]
-        sides.append(combatant)
+        sides.append(Team((combatant,), shields=spec["shields"]))
     return sides[0], sides[1]
 
 
@@ -87,7 +89,7 @@ def _move_events(result: BattleResult) -> list[dict]:
 
 
 def _run(gm: GameMaster, battle: dict) -> BattleResult:
-    return Battle(_make_combatants(gm, battle), _make_policies(battle)).run()
+    return Battle(_make_teams(gm, battle), _make_policies(battle)).run()
 
 
 def test_reference_comes_from_snapshot_commit() -> None:
@@ -109,7 +111,7 @@ def test_turn_by_turn_matches_pvpoke(gm: GameMaster, battle: dict) -> None:
 @pytest.mark.parametrize("battle", BATTLES, ids=[b["id"] for b in BATTLES])
 def test_moves_and_result_match_pvpoke(gm: GameMaster, battle: dict) -> None:
     policies = _make_policies(battle)
-    result = Battle(_make_combatants(gm, battle), policies).run()
+    result = Battle(_make_teams(gm, battle), policies).run()
     # 剧本里的每个大招都应该在我们的引擎里被用到（排错回合会被悄悄忽略）
     assert policies[0].unused_charged() == [] and policies[1].unused_charged() == []
     expected_moves = [e for e in battle["events"] if e["kind"] == "move"]

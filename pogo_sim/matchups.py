@@ -38,12 +38,13 @@ from pathlib import Path
 from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from pogo_sim.battle import Battle, BattleResult
-from pogo_sim.combatant import Combatant, PokemonBuild, make_combatant
+from pogo_sim.combatant import PokemonBuild, make_combatant
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
 from pogo_sim.moveset import Moveset, moves_outside_movepool
 from pogo_sim.season import SEASON_PRESETS, SeasonRules, league_name, season_build
 from pogo_sim.simple_policy import SimplePolicy, SimplePolicyConfig
 from pogo_sim.stats import IVs, calculate_cp
+from pogo_sim.team import Team
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
@@ -285,7 +286,7 @@ def _prepare_entry(gm: GameMaster, config: MatchupConfig, entry: Entry) -> Parti
     if outside:
         note = f"招式池外的招式：{', '.join(outside)}（配置里写了 outside_movepool = true）"
         build = replace(build, notes=build.notes + (note,))
-    make_combatant(gm, build, 0, shields=0)  # 提前检查招式（快招 / 大招、第三个大招的规则）
+    make_combatant(gm, build, 0)  # 提前检查招式（快招 / 大招、第三个大招的规则）
     return Participant(entry.label or species.name, build, tuple(outside))
 
 
@@ -320,16 +321,16 @@ def make_sides(
     opponent: Participant,
     subject_shields: int,
     opponent_shields: int,
-) -> tuple[Combatant, Combatant]:
-    """建立一场对战的双方：测试对象是下标 0，对手是下标 1。"""
+) -> tuple[Team, Team]:
+    """建立一场 1v1 的双方（每队一只）：测试对象是第 0 方，对手是第 1 方。"""
     gm = matchups.gm
     return (
-        make_combatant(gm, subject.build, 0, shields=subject_shields),
-        make_combatant(gm, opponent.build, 1, shields=opponent_shields),
+        Team((make_combatant(gm, subject.build, 0),), shields=subject_shields),
+        Team((make_combatant(gm, opponent.build, 1),), shields=opponent_shields),
     )
 
 
-def fight(matchups: Matchups, sides: tuple[Combatant, Combatant]) -> BattleResult:
+def fight(matchups: Matchups, sides: tuple[Team, Team]) -> BattleResult:
     """双方都用配置里的简单规则策略打一场。"""
     policy = matchups.config.policy
     return Battle(sides, (SimplePolicy(policy), SimplePolicy(policy))).run()

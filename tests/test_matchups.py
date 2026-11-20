@@ -21,6 +21,7 @@ from pogo_sim.matchups import (
 )
 from pogo_sim.season import MEGA_PLUS_2, PVPOKE_SEASON
 from pogo_sim.simple_policy import SimplePolicy, SimplePolicyConfig
+from pogo_sim.team import Team
 
 EXAMPLE_CONFIG = REPO_ROOT / "experiments" / "mega_zygarde_ml.toml"
 
@@ -81,8 +82,8 @@ def test_example_grid_matches_direct_battles() -> None:
     for mine in range(3):
         for theirs in range(3):
             sides = (
-                make_combatant(matchups.gm, subject.build, 0, shields=mine),
-                make_combatant(matchups.gm, opponent.build, 1, shields=theirs),
+                Team((make_combatant(matchups.gm, subject.build, 0),), shields=mine),
+                Team((make_combatant(matchups.gm, opponent.build, 1),), shields=theirs),
             )
             result = Battle(sides, (SimplePolicy(), SimplePolicy())).run()
             assert grid.ratings[mine][theirs] == result.ratings[0]

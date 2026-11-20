@@ -56,7 +56,7 @@ def main() -> None:
         sides = make_sides(matchups, subject, opponent, int(mine), int(theirs))
         setup = format_setup(sides)  # 要在对战开始前取：盾数会变
         result = fight(matchups, sides)
-        names = (sides[0].name, sides[1].name)
+        names = (sides[0].active_member.name, sides[1].active_member.name)
         print(setup)
         print(format_result(result, names))
         print(format_timeline(result.events, names, show_decisions=True))

@@ -111,7 +111,7 @@ def test_mega_froslass_great_league(gm: GameMaster) -> None:
         "等级 14.5：52 级时 CP 4187 超过 1500，自动降到 CP 不超过上限的最高等级（CP 1498）",
     )
 
-    combatant = make_combatant(gm, build, index=0, shields=1)
+    combatant = make_combatant(gm, build, index=0)
     assert combatant.cp == 1498
     assert combatant.mega_level == 4
     assert [m.move_id for m in combatant.charged_moves] == list(FROSLASS_MEGA_MOVES[1])
@@ -271,7 +271,7 @@ def test_bad_charged_moves(
 ) -> None:
     build = PokemonBuild(species_id, 20, IVs(10, 10, 10), fast, charged)
     with pytest.raises(ValueError, match=message):
-        make_combatant(gm, build, index=0, shields=0)
+        make_combatant(gm, build, index=0)
 
 
 def test_third_charged_move_from_gamemaster_mega(gm: GameMaster) -> None:
@@ -279,5 +279,5 @@ def test_third_charged_move_from_gamemaster_mega(gm: GameMaster) -> None:
         "mewtwo_mega_x", 20, IVs(15, 15, 15), "PSYCHO_CUT",
         ("FOCUS_BLAST", "PSYSTRIKE", "DYNAMIC_PUNCH_PLUS"),
     )
-    combatant = make_combatant(gm, build, index=0, shields=0)
+    combatant = make_combatant(gm, build, index=0)
     assert combatant.charged_moves[2].move_id == "DYNAMIC_PUNCH_PLUS"

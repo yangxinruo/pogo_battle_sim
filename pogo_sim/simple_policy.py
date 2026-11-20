@@ -13,6 +13,7 @@
 开盾：见 SimplePolicyConfig.shielding。
 
 假设：双方信息完全公开（HP、能量、盾数、冷却），伤害按当前能力等级计算——和 PvPoke 一样。
+只看双方在场的那只，不考虑后备（3v3 的策略见 3v3-d）。
 这是有意做得简单的基准策略：PvPoke 的 AI 有更细的计算（mechanics.md 第 8 节），
 两者结果的差异和原因见 docs/simple_policy_vs_pvpoke.md。
 """
@@ -90,7 +91,7 @@ class SimplePolicy:
             return _fast(f"opponent HP {opponent.hp} <= fast move damage {fast_damage}")
 
         # 规则 4
-        if opponent.shields == 0:
+        if view.opponent_team.shields == 0:
             lethal = [m for m in affordable if damage[m.move_id] >= opponent.hp]
             if lethal:
                 move = min(lethal, key=lambda m: (m.energy_cost, -damage[m.move_id]))
@@ -113,12 +114,13 @@ class SimplePolicy:
             return _fast(f"timing: {wait}")
 
         # 规则 7
-        if self.config.bait_shields and opponent.shields > 0:
+        opponent_shields = view.opponent_team.shields
+        if self.config.bait_shields and opponent_shields > 0:
             cheapest = min(me.charged_moves, key=lambda m: (m.energy_cost, -damage[m.move_id]))
             if cheapest.energy_cost < target.energy_cost:
                 return _charged(
                     cheapest,
-                    f"bait: opponent has {opponent.shields} shield(s), "
+                    f"bait: opponent has {opponent_shields} shield(s), "
                     f"throw {cheapest.move_id} ({cheapest.energy_cost}) instead of {target.move_id}",
                 )
 
@@ -138,7 +140,7 @@ class SimplePolicy:
         opponent_fast = _damage(opponent, me, opponent.fast_move, rules)
         if opponent_fast >= me.hp:
             return f"opponent's fast move deals {opponent_fast} >= my HP {me.hp}"
-        if me.shields == 0:
+        if view.my_team.shields == 0:
             for move in opponent.charged_moves:
                 if opponent.energy >= move.energy_cost:
                     hit = _damage(opponent, me, move, rules)
@@ -190,7 +192,7 @@ class SimplePolicy:
         me = view.me
         shielding = self.config.shielding
         if shielding == "always":
-            return ShieldDecision(True, f"always shield ({me.shields} left)")
+            return ShieldDecision(True, f"always shield ({view.my_team.shields} left)")
         if shielding == "never":
             return ShieldDecision(False, "never shield")
 

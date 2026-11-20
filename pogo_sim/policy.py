@@ -13,6 +13,7 @@ from typing import Protocol
 from pogo_sim.combatant import Combatant
 from pogo_sim.gamemaster import Move
 from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
+from pogo_sim.team import Team
 
 
 @dataclass(frozen=True)
@@ -50,16 +51,27 @@ class ShieldDecision:
 
 @dataclass(frozen=True)
 class BattleView:
-    """策略做决定时能看到的信息。me / opponent 是对战状态本身，只读，不要修改。
+    """策略做决定时能看到的信息：双方的队伍。这些是对战状态本身，只读，不要修改。
 
-    双方的全部状态都看得见（HP、能量、盾数、冷却）——和 PvPoke 一样假设完全信息。
+    双方的全部状态都看得见（HP、能量、盾数、冷却，以及后备的状态）——和 PvPoke 一样假设完全信息。
+    盾数在队伍上：my_team.shields、opponent_team.shields。
     rules 是引擎正在用的规则，策略估算伤害时要用同一套。
     """
 
     turn: int
-    me: Combatant
-    opponent: Combatant
+    my_team: Team
+    opponent_team: Team
     rules: BattleRules = PVPOKE_COMPAT
+
+    @property
+    def me(self) -> Combatant:
+        """自己在场的那只。"""
+        return self.my_team.active_member
+
+    @property
+    def opponent(self) -> Combatant:
+        """对手在场的那只。"""
+        return self.opponent_team.active_member
 
 
 class Policy(Protocol):

@@ -105,7 +105,7 @@ def test_custom_mega_can_battle_with_third_move(gm_custom: GameMaster) -> None:
         "POWDER_SNOW",
         ("AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"),
     )
-    combatant = make_combatant(gm_custom, build, 0, shields=2)
+    combatant = make_combatant(gm_custom, build, 0)
     assert combatant.mega_level == 4
     assert combatant.cp == 1498
     assert [m.move_id for m in combatant.charged_moves] == ["AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"]
@@ -342,6 +342,6 @@ def test_mega_zygarde_file() -> None:
     assert gm.get_move("NIHIL_LIGHT").is_mega_move
 
     build = PokemonBuild("zygarde_mega", 50, IVs(15, 15, 15), "DRAGON_TAIL", ("CRUNCH", "BULLDOZE", "NIHIL_LIGHT"))
-    combatant = make_combatant(gm, build, 0, shields=2)
+    combatant = make_combatant(gm, build, 0)
     assert combatant.cp == 8568
     assert combatant.mega_level == 4

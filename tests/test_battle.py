@@ -14,6 +14,7 @@ from pogo_sim.gamemaster import GameMaster, load_gamemaster
 from pogo_sim.policy import ScriptedCharged, ScriptedPolicy
 from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
 from pogo_sim.stats import IVs
+from pogo_sim.team import Team
 from pogo_sim.timeline import CancelledEvent, DecisionEvent, MoveEvent
 
 MAX_IVS = IVs(15, 15, 15)
@@ -30,11 +31,10 @@ def _combatant(
     species: str,
     fast: str,
     charged: tuple[str, ...],
-    shields: int = 0,
     level: float = 40,
 ) -> Combatant:
     build = PokemonBuild(species, level, MAX_IVS, fast, charged)
-    return make_combatant(gm, build, index, shields)
+    return make_combatant(gm, build, index)
 
 
 def _charged_on(turn: int, move_id: str) -> ScriptedPolicy:
@@ -50,9 +50,15 @@ def _cancelled(result: BattleResult) -> list[tuple[int, int, str]]:
     return [(e.turn, e.actor, e.move_id) for e in result.events if isinstance(e, CancelledEvent)]
 
 
+def _teams(a: Combatant, b: Combatant, shields: tuple[int, int] = (0, 0)) -> tuple[Team, Team]:
+    """1v1：每队一只。"""
+    return Team((a,), shields[0]), Team((b,), shields[1])
+
+
 def _run(a: Combatant, b: Combatant, pa: ScriptedPolicy, pb: ScriptedPolicy,
-         rules: BattleRules = PVPOKE_COMPAT, seed: int | None = None) -> BattleResult:
-    return Battle((a, b), (pa, pb), rules, seed).run()
+         rules: BattleRules = PVPOKE_COMPAT, seed: int | None = None,
+         shields: tuple[int, int] = (0, 0)) -> BattleResult:
+    return Battle(_teams(a, b, shields), (pa, pb), rules, seed).run()
 
 
 def test_simultaneous_fast_moves_both_land(gm: GameMaster) -> None:
@@ -144,9 +150,9 @@ def test_fast_move_started_on_charged_turn_lands_next_turn(gm: GameMaster) -> No
 def test_shield_blocks_damage_but_self_debuff_applies(gm: GameMaster) -> None:
     """被挡下的大招只造成 1 点伤害；Close Combat 对自己的降防仍然生效。"""
     a = _combatant(gm, 0, "machamp", "COUNTER", ("CLOSE_COMBAT",))
-    b = _combatant(gm, 1, "registeel", "LOCK_ON", ("FOCUS_BLAST",), shields=1)
+    b = _combatant(gm, 1, "registeel", "LOCK_ON", ("FOCUS_BLAST",))
     a.energy = 100
-    result = _run(a, b, _charged_on(1, "CLOSE_COMBAT"), ScriptedPolicy(shields={1: True}))
+    result = _run(a, b, _charged_on(1, "CLOSE_COMBAT"), ScriptedPolicy(shields={1: True}), shields=(0, 1))
     close_combat = next(e for e in result.events if isinstance(e, MoveEvent) and e.move_id == "CLOSE_COMBAT")
     assert close_combat.damage == 1 and close_combat.shielded
     assert result.snapshots[0].sides[1].shields == 0
@@ -160,9 +166,9 @@ def test_opponent_debuff_through_shield_option(
     """Icy Wind 被挡下时是否仍降对手攻击，由开关决定（默认生效，Q6）。"""
     rules = replace(PVPOKE_COMPAT, opponent_effects_apply_when_shielded=apply_when_shielded)
     a = _combatant(gm, 0, "dewgong", "ICE_SHARD", ("ICY_WIND",))
-    b = _combatant(gm, 1, "swampert", "MUD_SHOT", ("HYDRO_CANNON",), shields=1)
+    b = _combatant(gm, 1, "swampert", "MUD_SHOT", ("HYDRO_CANNON",))
     a.energy = 100
-    result = _run(a, b, _charged_on(1, "ICY_WIND"), ScriptedPolicy(shields={1: True}), rules)
+    result = _run(a, b, _charged_on(1, "ICY_WIND"), ScriptedPolicy(shields={1: True}), rules, shields=(0, 1))
     assert result.snapshots[0].sides[1].atk_stage == expected_stage
 
 
@@ -185,7 +191,7 @@ def test_pvpoke_chance_counter(gm: GameMaster, move_id: str, expected: list[bool
     name, fast = species[move_id]
     a = _combatant(gm, 0, name, fast, (move_id,))
     b = _combatant(gm, 1, "registeel", "LOCK_ON", ("FOCUS_BLAST",))
-    battle = Battle((a, b), (ScriptedPolicy(), ScriptedPolicy()))
+    battle = Battle(_teams(a, b), (ScriptedPolicy(), ScriptedPolicy()))
     move = gm.get_move(move_id)
     assert [battle._effect_triggers(move, a, None) for _ in expected] == expected
 

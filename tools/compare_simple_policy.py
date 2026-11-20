@@ -16,6 +16,7 @@ from pogo_sim.combatant import PokemonBuild, make_combatant
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
 from pogo_sim.simple_policy import SimplePolicy, SimplePolicyConfig
 from pogo_sim.stats import IVs
+from pogo_sim.team import Team
 from pogo_sim.timeline import DecisionEvent, MoveEvent
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -46,7 +47,7 @@ def _run(gm: GameMaster, battle: dict, config: SimplePolicyConfig) -> BattleResu
         build = PokemonBuild(
             spec["species"], spec["level"], IVs(*spec["ivs"]), spec["fast"], tuple(spec["charged"]), spec["mega_level"]
         )
-        sides.append(make_combatant(gm, build, index, spec["shields"]))
+        sides.append(Team((make_combatant(gm, build, index),), shields=spec["shields"]))
     return Battle((sides[0], sides[1]), (SimplePolicy(config), SimplePolicy(config))).run()
 
 

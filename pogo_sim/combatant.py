@@ -5,7 +5,7 @@ from typing import Literal
 
 from pogo_sim.damage import DamageSide, effective_attack
 from pogo_sim.gamemaster import GameMaster, Move, Species, StatChange
-from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
+from pogo_sim.rules import BattleRules
 from pogo_sim.stats import BattleStats, IVs, calculate_battle_stats, calculate_cp
 
 # Mega 没有指定 Mega 等级时的默认值：有 supermega 标签的是 4，其他是 3。
@@ -75,7 +75,7 @@ class Combatant:
     """
 
     # ---- 固定数据 ----
-    index: int  # 0 或 1
+    index: int  # 属于哪一方：0 或 1
     build: PokemonBuild
     species: Species
     stats: BattleStats  # stats.hp 是最大 HP
@@ -85,8 +85,8 @@ class Combatant:
     mega_level: int | None  # 非 Mega 为 None
 
     # ---- 对战状态 ----
+    # 盾不在这里：盾是全队共用的，记在队伍上（team.Team.shields）。
     hp: int
-    shields: int
     energy: int = 0
     cooldown: int = 0  # 还要等几个回合才能再行动；0 表示本回合可以决定行动
     atk_stage: int = 0
@@ -181,14 +181,11 @@ def check_charged_moves(species: Species, charged_moves: tuple[Move, ...]) -> No
         )
 
 
-def make_combatant(
-    gm: GameMaster,
-    build: PokemonBuild,
-    index: int,
-    shields: int,
-    rules: BattleRules = PVPOKE_COMPAT,
-) -> Combatant:
-    """按配置建立对战开始时的状态（满 HP、0 能量、0 能力等级）。"""
+def make_combatant(gm: GameMaster, build: PokemonBuild, index: int) -> Combatant:
+    """按配置建立对战开始时的状态（满 HP、0 能量、0 能力等级）。index 是属于哪一方（0 或 1）。
+
+    盾数不在这里给：盾属于队伍，建队伍时给（team.Team）。
+    """
     species = gm.get_species(build.species_id)
     fast_move = gm.get_move(build.fast_move_id)
     charged_moves = tuple(gm.get_move(move_id) for move_id in build.charged_move_ids)
@@ -196,8 +193,6 @@ def make_combatant(
     if not fast_move.is_fast:
         raise ValueError(f"{fast_move.move_id} 不是快速技能")
     check_charged_moves(species, charged_moves)
-    if not 0 <= shields <= rules.max_shields:
-        raise ValueError(f"盾数必须是 0 到 {rules.max_shields}，得到 {shields}")
 
     mega_level = resolve_mega_level(species, build.mega_level)
 
@@ -220,6 +215,5 @@ def make_combatant(
         charged_moves=charged_moves,
         mega_level=mega_level,
         hp=stats.hp,
-        shields=shields,
         chance_meters=chance_meters,
     )
