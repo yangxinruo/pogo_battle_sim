@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）和 3v3-d1（对位评估；3v3 策略 `TeamPolicy` 在倒下后换上对位评分最高的）。主动换人和全队开盾的规则还在定（3v3-d2、d3），现在的策略都不主动换人。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）和 3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -22,7 +22,7 @@
   - `policy.py`：策略接口（出什么招、开不开盾、换不换人、倒下后换谁）和剧本策略 `ScriptedPolicy`
   - `simple_policy.py`：简单规则策略 `SimplePolicy`（规则和参数见文件开头）
   - `evaluation.py`：对位评估（从当前状态打 1v1，按盾数组合加权，0–1000）
-  - `team_policy.py`：3v3 策略 `TeamPolicy`（出招照简单规则策略；倒下后换上对位评分最高的）
+  - `team_policy.py`：3v3 策略 `TeamPolicy`（出招照简单规则策略；选人、主动换人、开盾看对位评分；规则和参数见文件开头）
   - `battle.py`：回合结算引擎（双方各一支队伍；1v1 是每队一只）
   - `timeline.py`：时间线事件、逐回合快照、文字日志
   - `report.py`：对战报告的文字部分（双方配置和配置说明、结果一行）
@@ -142,7 +142,7 @@ T  54  Swampert        sends in Altaria
 ...
 ```
 
-把 `SimplePolicy()` 换成 `TeamPolicy()`（`pogo_sim/team_policy.py`），倒下后换上的就不是排在前面的，而是对位评分最高的那只，原因里列出每个候选的评分，例如 `best matchup vs Altaria: Registeel 724, Medicham 387`。主动换人和全队开盾还在做（3v3-d2、d3）。
+把 `SimplePolicy()` 换成 `TeamPolicy()`（`pogo_sim/team_policy.py`）就是 3v3 策略：倒下后换上对位评分最高的；当前对位不好、后备里有明显更好的就主动换人；不在必输的对位上开盾。原因里列出对位评分，例如 `switch: matchup vs Swampert 297 < 450, Medicham 539 >= 500 (Medicham 539)`。同样这两队都用 `TeamPolicy`：B 赢，评分 387 vs 612，126 回合，换人 7 次。规则和参数见 [docs/mechanics.md](docs/mechanics.md) 13.7。
 
 按剧本换人（`ScriptedPolicy(switches={回合: 换上第几只}, replacements=...)`）可以复现某一场的具体过程。评分是本项目的口径：把 PvPoke 的 1v1 评分推广到全队（第 13.2 节 D1）。
 
