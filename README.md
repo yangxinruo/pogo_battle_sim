@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）和 3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）。3v3 的换人和开盾策略还没做（3v3-d），现在的简单规则策略不主动换人。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）和 3v3-c（换人结算与 PvPoke 源码逐回合核对）。3v3 的换人和开盾策略还没做（3v3-d），现在的简单规则策略不主动换人。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -294,6 +294,7 @@ Avalanche+ 的数值是假设的（见 `data/custom/mega_froslass.toml`），这
    node tools/pvpoke_ref/export_damage_reference.js --pvpoke <目录>
    node tools/pvpoke_ref/export_battle_reference.js --pvpoke <目录>
    node tools/pvpoke_ref/export_iv_reference.js --pvpoke <目录>
+   node tools/pvpoke_ref/export_switch_reference.js --pvpoke <目录>
    ```
 
 PvPoke 源码不入本仓库。

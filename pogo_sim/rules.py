@@ -94,8 +94,9 @@ class BattleRules:
     zero_turn_switch_floating_fast_hits: Literal["outgoing", "incoming"] = "outgoing"
 
     # 对手倒下、正在换人的那一回合，存活的一方能不能同时换人（不花回合）。
-    # 可以，不花回合，但要求换人冷却为 0（冷却中不能换）。PvPoke 相同（这一回合存活的一方不出招，
-    # 但换人照样处理）。状态：用户确认（2026-11-19，Q21）。
+    # 可以，不花回合，但要求换人冷却为 0（冷却中不能换；对手选人的等待也算进冷却）。
+    # PvPoke 也检查换人冷却，但只有存活的是第 0 方时才换得成（结算顺序的副作用，docs/mechanics.md 13.6）。
+    # 状态：用户确认（2026-11-19，Q21）。
     # 大招后的空回合本来就能 0 回合换人（Q15），不受这个开关影响。
     switch_during_opponent_replacement: bool = True
 

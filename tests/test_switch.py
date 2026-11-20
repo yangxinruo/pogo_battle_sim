@@ -225,6 +225,7 @@ def test_replacement_after_faint(gm: GameMaster) -> None:
     """倒下后：清空排队中的行动；下一回合是换人回合，存活的一方不出招；换上后双方同时行动。
 
     倒下后换人不开始换人冷却；选人等的时间计入对战时间，也从双方的换人冷却里扣（Q14）。
+    选人的等待发生在换人回合之前，所以换人回合的冷却已经扣掉了等待（3v3-c 与 PvPoke 对照后改正）。
     """
     mine, theirs = _team(gm, 0, AZUMARILL, REGISTEEL), _team(gm, 1, MEDICHAM, SWAMPERT)
     mine.members[0].hp = 1  # 第 2 回合被 Counter 打倒；它第 1 回合开始的 Bubble 还没结算
@@ -243,9 +244,14 @@ def test_replacement_after_faint(gm: GameMaster) -> None:
     ]
     assert [e.actor for e in _of(events, DecisionEvent, turn=3)] == [0]  # 只有选人，存活的一方不出招
     assert sorted(e.actor for e in _of(events, DecisionEvent, turn=4)) == [0, 1]
-    assert battle.elapsed_ms == 500 + 500 + (500 + 4_000) + 500
-    # 第 4 回合开头扣掉前三个回合（含 4 秒等待）
-    assert battle.snapshots[3].sides[1].switch_timer_ms == 20_000 - 500 - 500 - 4_500
+    assert battle.elapsed_ms == 500 + 500 + (4_000 + 500) + 500
+    # 第 3 回合（换人回合）开头扣掉第 2 回合和 4 秒等待；第 4 回合开头再扣第 3 回合
+    assert [s.sides[1].switch_timer_ms for s in battle.snapshots] == [
+        20_000,
+        20_000 - 500,
+        20_000 - 500 - 500 - 4_000,
+        20_000 - 500 - 500 - 4_000 - 500,
+    ]
 
 
 def test_replacement_wait_is_capped(gm: GameMaster) -> None:
@@ -261,7 +267,10 @@ def test_replacement_wait_is_capped(gm: GameMaster) -> None:
 
 @pytest.mark.parametrize("allowed", [True, False])
 def test_survivor_switch_during_opponent_replacement(gm: GameMaster, allowed: bool) -> None:
-    """对手倒下、正在换人的那一回合，存活的一方可以同时换人，不花回合（Q21，用户确认；PvPoke 相同）。"""
+    """对手倒下、正在换人的那一回合，存活的一方可以同时换人，不花回合（Q21，用户确认）。
+
+    PvPoke 只有存活的是第 0 方时才换得成（结算顺序的副作用，见 tests/test_switch_pvpoke.py 的已知差异）。
+    """
     mine, theirs = _team(gm, 0, REGISTEEL, AZUMARILL), _team(gm, 1, MEDICHAM, SWAMPERT)
     mine.members[0].hp = 1
     survivor = ScriptedPolicy(switches={3: 1})
@@ -288,6 +297,22 @@ def test_survivor_cannot_switch_during_opponent_replacement_on_cooldown(gm: Game
     assert [(e.actor, e.kind) for e in _of(battle.events, SwitchEvent, turn=3)] == [(0, "replacement")]
     assert survivor.unused_switches() == [3]
     assert theirs.active == 0
+
+
+def test_survivor_switch_timer_runs_out_during_opponent_wait(gm: GameMaster) -> None:
+    """存活的一方换人冷却还剩 1 秒，对手选人等了 4 秒：等待期间冷却走完，换人回合可以换（Q21）。"""
+    mine, theirs = _team(gm, 0, REGISTEEL, AZUMARILL), _team(gm, 1, MEDICHAM, SWAMPERT)
+    mine.members[0].hp = 1  # 第 2 回合被 Counter 打倒
+    theirs.switch_timer_ms = 2_000  # 第 3 回合开头还剩 1 秒
+    survivor = ScriptedPolicy(switches={3: 1})
+    battle = Battle(
+        (mine, theirs), (ScriptedPolicy(replacements={3: ScriptedReplacement(1, wait_ms=4_000)}), survivor)
+    )
+    _play(battle, 3)
+    assert [(e.actor, e.kind) for e in _of(battle.events, SwitchEvent, turn=3)] == [
+        (0, "replacement"),
+        (1, "zero_turn"),
+    ]
 
 
 def test_double_knockout_both_replace(gm: GameMaster) -> None:

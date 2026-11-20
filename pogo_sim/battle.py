@@ -4,7 +4,8 @@
 1v1 就是每队一只。
 
 每回合的步骤与 PvPoke battle/Battle.js 的 step() 一致：
-0. 换人冷却减少：扣掉上一回合花的对战时间（大招、倒下后选人的等待都算）。
+0. 换人冷却减少：扣掉上一回合花的对战时间（含大招）。换人回合先让倒下的一方选人，
+   再扣掉选人的等待（等待发生在换人回合之前）。
 1. 冷却减少：双方冷却各减 1 回合。
 2. 决定行动：冷却为 0 的一方问自己的策略（快招、大招或主动换人）。
    - 上一回合有大招结算时，本回合只能换人，而且不花回合（"大招后的空回合"，0 回合换人）。
@@ -21,7 +22,7 @@
 
 引擎从不自己做决定：出招、开盾、换人都问策略（policy.py），原因写进时间线。
 状态：参考 PvPoke。1v1 部分已用 PvPoke 源码的对战记录逐回合核对（tests/test_battle_pvpoke.py）；
-换人部分照 PvPoke 训练模式的代码写（docs/mechanics.md 13.1），与 PvPoke 的对照见 3v3-c。
+换人部分照 PvPoke 训练模式的代码写（docs/mechanics.md 13.1），也已逐回合核对（tests/test_switch_pvpoke.py，13.6）。
 
 暂不支持：形态变化、Gulp Missile 之类的特殊招式。
 """
@@ -34,7 +35,7 @@ from typing import Literal
 from pogo_sim.combatant import Combatant
 from pogo_sim.damage import calculate_damage
 from pogo_sim.gamemaster import Move
-from pogo_sim.policy import BattleView, ChargedAction, FastAction, Policy, SwitchAction
+from pogo_sim.policy import BattleView, ChargedAction, FastAction, Policy, Replacement, SwitchAction
 from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
 from pogo_sim.team import Team
 from pogo_sim.timeline import (
@@ -88,7 +89,7 @@ class _TurnClock:
     extra_ms: int = 0
     charged_used: int = 0
     shield_used: bool = False
-    wait_ms: int = 0  # 倒下后选人的等待（双方同时选人时取较长的）
+    wait_ms: int = 0  # 倒下后选人的等待（双方同时选人时取较长的），发生在换人回合开始之前
 
 
 @dataclass(frozen=True)
@@ -228,18 +229,26 @@ class Battle:
     def play_turn(self) -> None:
         """结算一个回合（步骤见模块说明）。"""
         turn = self.turn
+        clock = _TurnClock()
 
-        # 0. 换人冷却减少。PvPoke 在 step() 开头扣，大招和选人的暂停期间也照扣（Q13、Q14）。
-        for team in self.teams:
-            team.switch_timer_ms = max(0, team.switch_timer_ms - self._last_turn_ms)
+        # 0. 换人冷却减少：扣掉上一回合花的对战时间。PvPoke 在 step() 开头扣，大招的暂停期间也照扣（Q13、Q14）。
+        self._tick_switch_timers(self._last_turn_ms)
+
+        # 倒下后的换人回合：倒下的一方先选人（换谁、等多久）。选人的等待发生在换人回合之前，
+        # 等待期间双方的换人冷却照走——存活的一方这一回合能不能换，看的是等完之后的冷却
+        # （PvPoke 训练模式相同：选人期间 step() 照常每 500 毫秒扣一次换人计时）。
+        replacements: dict[int, Replacement] = {}
+        if self.replacement_turn:
+            replacements = self._choose_replacements(turn)
+            clock.wait_ms = max(choice.wait_ms for choice in replacements.values())
+            self._tick_switch_timers(clock.wait_ms)
 
         # 1. 冷却减少
         for team in self.teams:
             team.active_member.cooldown = max(0, team.active_member.cooldown - 1)
 
         # 2. 决定行动
-        clock = _TurnClock()
-        self._decide_actions(turn, clock)
+        self._decide_actions(turn, replacements)
 
         # 3. 取出本回合要结算的行动；4. 排序
         due = self._take_due_actions(turn)
@@ -251,9 +260,9 @@ class Battle:
 
         # 6. 回合结束
         self.charged_last_turn = any(action.kind == "charged" for action in due)
-        turn_ms = clock.extra_ms + self._end_of_turn_ms(clock) + clock.wait_ms
-        self.elapsed_ms += turn_ms
-        self._last_turn_ms = turn_ms
+        turn_ms = clock.extra_ms + self._end_of_turn_ms(clock)
+        self.elapsed_ms += clock.wait_ms + turn_ms
+        self._last_turn_ms = turn_ms  # 选人的等待已经在本回合开头扣过了
         if clock.charged_used > 0:
             # 大招之后双方冷却都设为 1：下一回合是空回合，再下一回合双方同时恢复行动。
             # 来源：Battle.js step() 末尾 poke.cooldown = 500。
@@ -266,7 +275,12 @@ class Battle:
 
     # ---- 第 2 步：决定行动 ----
 
-    def _decide_actions(self, turn: int, clock: _TurnClock) -> None:
+    def _tick_switch_timers(self, elapsed_ms: int) -> None:
+        for team in self.teams:
+            team.switch_timer_ms = max(0, team.switch_timer_ms - elapsed_ms)
+
+    def _decide_actions(self, turn: int, replacements: dict[int, Replacement]) -> None:
+        """replacements：换人回合里倒下的一方已经选好的人（见 _choose_replacements），按方排队。"""
         # 先记下新的冷却，等双方都决定完再一起设置：后决定的一方看到的仍是回合开始时的状态。
         sides = (self.active(0), self.active(1))
         new_cooldowns = [side.cooldown for side in sides]
@@ -276,9 +290,11 @@ class Battle:
             view = BattleView(turn, team, self.teams[1 - side.index], self.rules)
 
             if self.replacement_turn:
-                # 倒下后的换人回合：倒下的一方选人；存活的一方不出招，只可能 0 回合换人。
+                # 倒下后的换人回合：倒下的一方换上选好的那只；存活的一方不出招，只可能 0 回合换人。
+                # 两边的换人按方的顺序排队（同优先级先结算第 0 方，与 PvPoke 相同）。
                 if side.is_fainted:
-                    self._decide_replacement(view, clock)
+                    choice = replacements[side.index]
+                    self._queue_switch(view, choice.to, "replacement", choice.reason, choice.wait_ms)
                 elif self.charged_last_turn or self.rules.switch_during_opponent_replacement:
                     self._decide_zero_turn_switch(view)
                 continue
@@ -344,16 +360,20 @@ class Battle:
             return
         self._queue_switch(view, decision.to, "zero_turn", decision.reason)
 
-    def _decide_replacement(self, view: BattleView, clock: _TurnClock) -> None:
-        """在场的倒下了：问策略换谁上、选人时等多久。"""
-        team = view.my_team
-        choice = self.policies[team.index].choose_replacement(view)
-        if not 0 <= choice.wait_ms <= self.rules.max_replacement_wait_ms:
-            raise ValueError(
-                f"选人等待必须是 0 到 {self.rules.max_replacement_wait_ms} 毫秒，得到 {choice.wait_ms}"
-            )
-        clock.wait_ms = max(clock.wait_ms, choice.wait_ms)
-        self._queue_switch(view, choice.to, "replacement", choice.reason, choice.wait_ms)
+    def _choose_replacements(self, turn: int) -> dict[int, Replacement]:
+        """在场的倒下了：问倒下的一方（双方同时倒下就是双方）换谁上、选人时等多久。"""
+        choices = {}
+        for team in self.teams:
+            if not team.active_member.is_fainted:
+                continue
+            view = BattleView(turn, team, self.teams[1 - team.index], self.rules)
+            choice = self.policies[team.index].choose_replacement(view)
+            if not 0 <= choice.wait_ms <= self.rules.max_replacement_wait_ms:
+                raise ValueError(
+                    f"选人等待必须是 0 到 {self.rules.max_replacement_wait_ms} 毫秒，得到 {choice.wait_ms}"
+                )
+            choices[team.index] = choice
+        return choices
 
     def _queue_switch(
         self, view: BattleView, to: int, kind: SwitchKind, reason: str, wait_ms: int = 0
