@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）和 3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）、3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）和 3v3-e（3v3 配置文件与报告，含队伍检查）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -10,7 +10,7 @@
   - `cpm.py`：等级与 CP 倍率（CPM）表
   - `stats.py`：IV、CP、HP、实际攻防
   - `iv_ranking.py`：联盟 CP 上限下的 IV 排名（按能力值乘积）
-  - `season.py`：赛季规则（等级上限、Mega 等级上限、Mega 降等级、每队 Mega 数）和按规则建立配置的 `season_build`
+  - `season.py`：赛季规则（等级上限、Mega 等级上限、Mega 降等级、每队 Mega 数）、按规则建立配置的 `season_build`、队伍检查 `check_team`（同一种不能带两只、Mega 数）
   - `conversion.py`：正作六项能力值 → GO 种族值
   - `gamemaster.py`：读取 PvPoke gamemaster.json，并合并覆盖文件
   - `custom.py`：自定义覆盖文件（新宝可梦、新招式、修改已有条目）
@@ -25,14 +25,17 @@
   - `team_policy.py`：3v3 策略 `TeamPolicy`（出招照简单规则策略；选人、主动换人、开盾看对位评分；规则和参数见文件开头）
   - `battle.py`：回合结算引擎（双方各一支队伍；1v1 是每队一只）
   - `timeline.py`：时间线事件、逐回合快照、文字日志
-  - `report.py`：对战报告的文字部分（双方配置和配置说明、结果一行）
+  - `report.py`：对战报告的文字部分（双方配置和配置说明、结果一行；1v1 和 3v3 都可以）
   - `moveset.py`：配招和招式池检查
-  - `matchups.py`：对战配置文件（TOML）和 0–2 盾对 0–2 盾的九宫格
+  - `config.py`：配置文件的共用部分（一只宝可梦的写法、参数表的检查、报告里的一行说明）
+  - `matchups.py`：1v1 对战配置文件（TOML）和 0–2 盾对 0–2 盾的九宫格
+  - `team_battle.py`：3v3 配置文件（TOML）和报告
 - `tests/`：pytest 测试；`tests/fixtures/` 是用 PvPoke 源码生成的参考数据
 - `tools/pvpoke_ref/`：在 Node 里运行 PvPoke 源码、生成参考数据的脚本
 - `tools/compare_simple_policy.py`：简单规则策略与 PvPoke AI 的比较（`.venv/bin/python -m tools.compare_simple_policy`）
 - `tools/run_matchups.py`：按对战配置文件跑九宫格（`.venv/bin/python -m tools.run_matchups <配置文件>`）
-- `experiments/`：对战配置文件，例如 Mega 基格尔德在大师联盟（`mega_zygarde_ml.toml`）；结果在 `docs/experiments/`
+- `tools/run_team_battle.py`：按 3v3 配置文件打一场、出报告（`.venv/bin/python -m tools.run_team_battle <配置文件>`）
+- `experiments/`：对战配置文件，例如 Mega 基格尔德在大师联盟（`mega_zygarde_ml.toml`）、3v3 的例子（`gl_3v3_example.toml`）；结果在 `docs/experiments/`
 - `data/`：PvPoke gamemaster.json 快照（来源见 `data/SOURCE.md`）
 - `data/custom/`：自定义覆盖文件（TOML），格式见 docs/mechanics.md 第 10 节
 - `docs/`：机制规格文档
@@ -145,6 +148,16 @@ T  54  Swampert        sends in Altaria
 把 `SimplePolicy()` 换成 `TeamPolicy()`（`pogo_sim/team_policy.py`）就是 3v3 策略：倒下后换上对位评分最高的；当前对位不好、后备里有明显更好的就主动换人；不在必输的对位上开盾。原因里列出对位评分，例如 `switch: matchup vs Swampert 297 < 450, Medicham 539 >= 500 (Medicham 539)`。同样这两队都用 `TeamPolicy`：B 赢，评分 387 vs 612，126 回合，换人 7 次。规则和参数见 [docs/mechanics.md](docs/mechanics.md) 13.7。
 
 按剧本换人（`ScriptedPolicy(switches={回合: 换上第几只}, replacements=...)`）可以复现某一场的具体过程。评分是本项目的口径：把 PvPoke 的 1v1 评分推广到全队（第 13.2 节 D1）。
+
+### 用配置文件跑 3v3
+
+两队写在一个 TOML 文件里（格式见 `pogo_sim/team_battle.py` 开头，例子 `experiments/gl_3v3_example.toml`），双方都用 `TeamPolicy`；策略参数和机制开关可以在文件里改，也可以只改某一队的：
+
+```bash
+.venv/bin/python -m tools.run_team_battle experiments/gl_3v3_example.toml --output docs/experiments/gl_3v3_example.md
+```
+
+建配置时检查队伍：每队 3 只、同一种宝可梦不能带两只（按图鉴编号，暗影、Mega、地区形态都算同一种）、Mega 不超过 1 只。报告（[docs/experiments/gl_3v3_example.md](docs/experiments/gl_3v3_example.md)）里有两队的配置和策略参数、结果、每只的情况（剩余 HP、伤害、放了哪些大招、挨大招时开没开盾）、开局对位评分、每次换人和开盾的原因，最后是带原因的完整时间线。例子没写 IV，用的是 IV 排名第 1，所以结果（B 赢，评分 221 vs 778，100 回合）和上面用 PvPoke 默认 IV 的那一场不同。
 
 ## 自定义宝可梦和招式
 

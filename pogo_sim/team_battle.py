@@ -1,0 +1,561 @@
+"""3v3 对战配置与报告（3v3-e）：两队写在一个 TOML 文件里，打一场，输出 Markdown 报告。
+
+用 tools/run_team_battle.py 运行。例子：experiments/gl_3v3_example.toml。
+
+文件格式：
+    description = "说明"                    # 可选
+    custom_files = ["data/custom/x.toml"]  # 可选：覆盖文件，路径相对仓库根目录（同 matchups.py）
+    league = 1500                          # CP 上限：500 / 1500 / 2500 / 10000（大师联盟）
+    season = "pvpoke"                      # 赛季规则预设，见 season.SEASON_PRESETS
+
+    [rules]                                # 可选：机制规则（BattleRules 的字段），默认与 PvPoke 一致。例如
+    timeout_result = "more_remaining"      #   时间到、双方都还有宝可梦时怎么判（docs/mechanics.md 9.3）
+
+    [policy]                               # 可选：双方的 3v3 策略参数（TeamPolicyConfig），不写就是默认
+    switching = "threshold"
+    [policy.moves]                         # 出招、开盾的简单规则参数（SimplePolicyConfig）
+    bait_shields = true
+    [policy.evaluation]                    # 对位评估时双方用的简单规则参数（SimplePolicyConfig）
+
+    [[team]]                               # 正好两队，第一队是第 0 方
+    name = "Team A"                        # 报告里的名字，两队不能同名
+    shields = 2                            # 可选，默认 2
+    [team.policy]                          # 可选：只改这一队的策略参数，逐项覆盖上面的 [policy]
+    switching = "never"
+    [[team.member]]                        # 正好 3 只（BattleRules.max_team_size），按出场顺序，第一只是首发
+    species = "azumarill"                  # 写法同 matchups.py 的 [[subject]]：可选 label、ivs、level、
+    fast = "BUBBLE"                        #   best_buddy、mega_level、outside_movepool
+    charged = ["ICE_BEAM", "PLAY_ROUGH"]
+
+队伍检查（建配置时）：只数；同一种宝可梦不能带两只（按图鉴编号，暗影、Mega、地区形态都算同一种）；
+Mega 不超过赛季规则的上限（season.check_team）。
+
+双方都用 3v3 策略 TeamPolicy（规则见 docs/mechanics.md 13.7）。对战是确定的：同一个配置每次结果相同。
+
+报告的内容：设置、两队的配置和策略参数、结果、每只的情况、开局对位评分、换人和开盾的原因、带原因的完整时间线。
+"""
+
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from pogo_sim.battle import Battle, BattleResult
+from pogo_sim.combatant import make_combatant
+from pogo_sim.config import (
+    ConfigError,
+    Entry,
+    Participant,
+    check_unknown_keys,
+    error_message,
+    format_params,
+    format_participant,
+    format_table,
+    load_toml,
+    merge_tables,
+    parse_entry,
+    parse_params,
+    prepare_entry,
+    resolve_path,
+)
+from pogo_sim.evaluation import MatchupEvaluator
+from pogo_sim.gamemaster import GameMaster, load_gamemaster
+from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
+from pogo_sim.season import SEASON_PRESETS, SeasonRules, check_team, league_name
+from pogo_sim.team import Team
+from pogo_sim.team_policy import TeamPolicy, TeamPolicyConfig
+from pogo_sim.timeline import DecisionEvent, FaintEvent, MoveEvent, SwitchEvent, format_timeline
+
+_TOP_LEVEL_KEYS = {"description", "custom_files", "league", "season", "rules", "policy", "team"}
+_TEAM_KEYS = {"name", "shields", "policy", "member"}
+
+_SWITCH_KINDS = {"switch": "主动换人", "zero_turn": "0 回合换人", "replacement": "倒下后换人"}
+
+
+# ---- 配置 ----
+
+
+@dataclass(frozen=True)
+class TeamSetup:
+    """配置文件里的一队（还没按赛季规则建配置）。"""
+
+    name: str
+    shields: int
+    policy: TeamPolicyConfig
+    members: tuple[Entry, ...]
+
+
+@dataclass(frozen=True)
+class TeamBattleConfig:
+    description: str
+    custom_files: tuple[Path, ...]
+    league: int
+    season: SeasonRules
+    rules: BattleRules
+    teams: tuple[TeamSetup, TeamSetup]
+
+
+def load_team_battle_config(path: Path | str) -> TeamBattleConfig:
+    """读取并检查 3v3 配置文件（格式见模块说明）。写错时抛出 ConfigError。"""
+    path = Path(path)
+    raw = load_toml(path)
+    where = path.name
+
+    check_unknown_keys(raw, _TOP_LEVEL_KEYS, where)
+    for key in ("league", "season", "team"):
+        if key not in raw:
+            raise ConfigError(f"{where}：缺少 {key}")
+
+    league = raw["league"]
+    if not isinstance(league, int) or isinstance(league, bool) or league <= 0:
+        raise ConfigError(f"{where}：league 要写正整数（CP 上限），得到 {league!r}")
+    season_key = raw["season"]
+    if season_key not in SEASON_PRESETS:
+        raise ConfigError(f"{where}：不认识的赛季规则 {season_key!r}（可用：{', '.join(SEASON_PRESETS)}）")
+    custom_files = raw.get("custom_files", [])
+    if not isinstance(custom_files, list) or not all(isinstance(p, str) for p in custom_files):
+        raise ConfigError(f"{where}：custom_files 要写字符串列表")
+
+    rules = parse_params(BattleRules, raw.get("rules", {}), where, "规则参数")
+    shared_policy = raw.get("policy", {})
+    parse_params(TeamPolicyConfig, shared_policy, where, "策略参数")  # 先单独检查一遍，报错时好找
+
+    teams = raw["team"]
+    if not isinstance(teams, list) or len(teams) != 2:
+        count = len(teams) if isinstance(teams, list) else "不是 [[team]] 表"
+        raise ConfigError(f"{where}：要正好写两队（[[team]]），得到 {count}")
+    parsed = tuple(
+        _parse_team(team, shared_policy, rules, f"{where}：第 {i + 1} 队") for i, team in enumerate(teams)
+    )
+    if parsed[0].name == parsed[1].name:
+        raise ConfigError(f"{where}：两队不能同名（{parsed[0].name}）")
+
+    return TeamBattleConfig(
+        description=str(raw.get("description", "")),
+        custom_files=tuple(resolve_path(p) for p in custom_files),
+        league=league,
+        season=SEASON_PRESETS[season_key],
+        rules=rules,
+        teams=(parsed[0], parsed[1]),
+    )
+
+
+def _parse_team(raw: Any, shared_policy: dict[str, Any], rules: BattleRules, where: str) -> TeamSetup:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}：要写成 [[team]] 表")
+    if "name" not in raw:
+        raise ConfigError(f"{where}：缺少 name")
+    name = raw["name"]
+    if not isinstance(name, str) or not name:
+        raise ConfigError(f"{where}：name 要写非空的字符串，得到 {name!r}")
+    where = f"{where}（{name}）"
+    check_unknown_keys(raw, _TEAM_KEYS, where)
+    if "member" not in raw:
+        raise ConfigError(f"{where}：缺少 member（[[team.member]]）")
+
+    shields = raw.get("shields", rules.max_shields)
+    if not isinstance(shields, int) or isinstance(shields, bool) or not 0 <= shields <= rules.max_shields:
+        raise ConfigError(f"{where}：shields 要写 0 到 {rules.max_shields} 的整数，得到 {shields!r}")
+
+    team_policy = raw.get("policy", {})
+    if not isinstance(team_policy, dict):
+        raise ConfigError(f"{where}：policy 要写成表（[team.policy]）")
+    policy = parse_params(TeamPolicyConfig, merge_tables(shared_policy, team_policy), where, "策略参数")
+
+    members = raw["member"]
+    size = rules.max_team_size
+    if not isinstance(members, list) or len(members) != size:
+        count = len(members) if isinstance(members, list) else "不是 [[team.member]] 表"
+        raise ConfigError(f"{where}：每队要正好 {size} 只（[[team.member]]），得到 {count}")
+    entries = tuple(parse_entry(member, f"{where}第 {i + 1} 只") for i, member in enumerate(members))
+    return TeamSetup(name, shields, policy, entries)
+
+
+# ---- 按赛季规则建配置、检查队伍 ----
+
+
+@dataclass(frozen=True)
+class PreparedTeam:
+    setup: TeamSetup
+    members: tuple[Participant, ...]
+    # 时间线和报告里的名字：label（默认是宝可梦名）；两队有同名的，后面加上队名
+    names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TeamBattle:
+    """准备好的一场 3v3：配置、加载了覆盖文件的 gamemaster、两队。"""
+
+    config: TeamBattleConfig
+    gm: GameMaster
+    teams: tuple[PreparedTeam, PreparedTeam]
+
+
+def prepare_team_battle(config: TeamBattleConfig) -> TeamBattle:
+    """加载覆盖文件，给每只宝可梦按赛季规则建配置，检查招式和队伍。写错时抛出 ConfigError。"""
+    gm = load_gamemaster(custom_files=config.custom_files)
+    prepared = [_prepare_team(gm, config, setup) for setup in config.teams]
+
+    # 两队都有的名字（例如镜像对局），后面加队名，免得时间线里分不清
+    labels = [[p.label for p in team] for team in prepared]
+    shared = set(labels[0]) & set(labels[1])
+    teams = tuple(
+        PreparedTeam(
+            setup,
+            members,
+            tuple(f"{p.label} ({setup.name})" if p.label in shared else p.label for p in members),
+        )
+        for setup, members in zip(config.teams, prepared)
+    )
+    return TeamBattle(config, gm, (teams[0], teams[1]))
+
+
+def _prepare_team(gm: GameMaster, config: TeamBattleConfig, setup: TeamSetup) -> tuple[Participant, ...]:
+    members = []
+    for i, entry in enumerate(setup.members):
+        where = f"{setup.name} 第 {i + 1} 只（{entry.label or entry.species_id}）"
+        try:
+            members.append(prepare_entry(gm, entry, config.league, config.season))
+        except (KeyError, ValueError) as e:
+            raise ConfigError(f"{where}：{error_message(e)}") from e
+    try:
+        check_team(gm, [p.build for p in members], config.season)
+    except ValueError as e:
+        raise ConfigError(f"{setup.name}：{e}") from e
+    labels = [p.label for p in members]
+    duplicates = sorted({label for label in labels if labels.count(label) > 1})
+    if duplicates:
+        raise ConfigError(f"{setup.name} 里有重名的 {', '.join(duplicates)}：给它们写不同的 label")
+    return tuple(members)
+
+
+# ---- 对战 ----
+
+
+def make_teams(battle: TeamBattle) -> tuple[Team, Team]:
+    """建立双方的队伍（新的宝可梦，满 HP、0 能量）。"""
+    teams = tuple(
+        Team(
+            tuple(make_combatant(battle.gm, p.build, side) for p in team.members),
+            shields=team.setup.shields,
+        )
+        for side, team in enumerate(battle.teams)
+    )
+    return teams[0], teams[1]
+
+
+def make_policies(battle: TeamBattle) -> tuple[TeamPolicy, TeamPolicy]:
+    """双方的 TeamPolicy。对位评估的配置相同时共用一个评估器（共用缓存，结果不变，只是快）。"""
+    configs = [team.setup.policy for team in battle.teams]
+    first = TeamPolicy(configs[0])
+    if configs[1].evaluation == configs[0].evaluation:
+        return first, TeamPolicy(configs[1], first.evaluator)
+    return first, TeamPolicy(configs[1])
+
+
+def run_team_battle(battle: TeamBattle) -> BattleResult:
+    return Battle(make_teams(battle), make_policies(battle), battle.config.rules).run()
+
+
+def timeline_names(battle: TeamBattle) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return battle.teams[0].names, battle.teams[1].names
+
+
+# ---- 开局对位评分 ----
+
+
+@dataclass(frozen=True)
+class OpeningMatchups:
+    """开局时一队每一只对另一队每一只的对位评分（满 HP、0 能量，盾数是两队开局的盾数）。"""
+
+    side: int  # 从哪一方看
+    ratings: tuple[tuple[int, ...], ...]  # ratings[我方第几只][对方第几只]，四舍五入
+
+
+def opening_matchups(battle: TeamBattle) -> list[OpeningMatchups]:
+    """TeamPolicy 选人、换人时用的就是这种评分。两队对位评估的配置相同时只算第 0 方的（第 1 方约等于 1000 减它）。"""
+    sides = [0] if battle.teams[0].setup.policy.evaluation == battle.teams[1].setup.policy.evaluation else [0, 1]
+    results = []
+    for side in sides:
+        mine, theirs = battle.teams[side], battle.teams[1 - side]
+        evaluator = MatchupEvaluator(mine.setup.policy.evaluation)
+        ratings = tuple(
+            tuple(
+                evaluator.evaluate(
+                    make_combatant(battle.gm, me.build, 0),
+                    make_combatant(battle.gm, opponent.build, 1),
+                    mine.setup.shields,
+                    theirs.setup.shields,
+                    battle.config.rules,
+                ).rounded
+                for opponent in theirs.members
+            )
+            for me in mine.members
+        )
+        results.append(OpeningMatchups(side, ratings))
+    return results
+
+
+# ---- 每只的情况 ----
+
+
+@dataclass(frozen=True)
+class MemberSummary:
+    """一只宝可梦在这一场里的情况（从事件里统计）。"""
+
+    side: int
+    slot: int
+    hp: int  # 结束时的 HP
+    max_hp: int
+    energy: int  # 结束时的能量
+    damage_dealt: int  # 造成的伤害（被盾挡下的算 1）
+    damage_taken: int
+    fast_moves: int  # 用了几次快招
+    charged_moves: tuple[str, ...]  # 放的大招，按顺序
+    charged_shielded: int  # 挨的大招里，开盾挡下的次数
+    charged_unshielded: int  # 挨的大招里，队伍还有盾但没开的次数
+    fainted_turn: int | None
+
+
+def member_summaries(battle: TeamBattle, result: BattleResult) -> list[MemberSummary]:
+    """按第 0 方、第 1 方，再按队伍顺序。"""
+    dealt: Counter[tuple[int, int]] = Counter()
+    taken: Counter[tuple[int, int]] = Counter()
+    fast: Counter[tuple[int, int]] = Counter()
+    charged: dict[tuple[int, int], list[str]] = {}
+    shielded: Counter[tuple[int, int]] = Counter()
+    unshielded: Counter[tuple[int, int]] = Counter()
+    fainted: dict[tuple[int, int], int] = {}
+    for event in result.events:
+        if isinstance(event, MoveEvent):
+            attacker = (event.actor, event.actor_slot)
+            defender = (1 - event.actor, event.target_slot)
+            dealt[attacker] += event.damage
+            taken[defender] += event.damage
+            if event.is_charged:
+                charged.setdefault(attacker, []).append(event.move_id)
+                if event.shielded:
+                    shielded[defender] += 1
+                elif event.shield_reason is not None:  # 有盾才会问开不开
+                    unshielded[defender] += 1
+            else:
+                fast[attacker] += 1
+        elif isinstance(event, FaintEvent):
+            fainted[(event.actor, event.slot)] = event.turn
+
+    last = result.snapshots[-1].sides
+    summaries = []
+    for side, team in enumerate(battle.teams):
+        for slot, participant in enumerate(team.members):
+            key = (side, slot)
+            max_hp = make_combatant(battle.gm, participant.build, side).stats.hp
+            summaries.append(
+                MemberSummary(
+                    side=side,
+                    slot=slot,
+                    hp=last[side].member_hp[slot],
+                    max_hp=max_hp,
+                    energy=last[side].member_energy[slot],
+                    damage_dealt=dealt[key],
+                    damage_taken=taken[key],
+                    fast_moves=fast[key],
+                    charged_moves=tuple(charged.get(key, [])),
+                    charged_shielded=shielded[key],
+                    charged_unshielded=unshielded[key],
+                    fainted_turn=fainted.get(key),
+                )
+            )
+    return summaries
+
+
+# ---- 报告（Markdown） ----
+
+
+def format_outcome(battle: TeamBattle, result: BattleResult) -> str:
+    """一行中文结果。"""
+    names = [team.setup.name for team in battle.teams]
+    if result.winner is None:
+        outcome = "平局"
+    else:
+        outcome = f"{names[result.winner]} 赢"
+    if result.timed_out:
+        outcome += f"（时间到，判定方式 timeout_result = \"{battle.config.rules.timeout_result}\"）"
+    return (
+        f"{outcome}。评分 {result.ratings[0]} 对 {result.ratings[1]}；"
+        f"剩余 {result.remaining[0]} 只对 {result.remaining[1]} 只；"
+        f"剩余盾 {result.shields_left[0]} 对 {result.shields_left[1]}；"
+        f"{result.turns} 回合，对战时间 {result.elapsed_ms / 1000:g} 秒（大招每次按 "
+        f"{battle.config.rules.charged_move_ms / 1000:g} 秒算）。"
+    )
+
+
+def _format_team_section(battle: TeamBattle, side: int) -> list[str]:
+    team = battle.teams[side]
+    setup = team.setup
+    lines = [f"**{setup.name}**（第 {side} 方，{setup.shields} 盾）", ""]
+    for slot, participant in enumerate(team.members):
+        role = "首发" if slot == 0 else "后备"
+        lines.append(f"- {role} {format_participant(battle.gm, participant)}")
+    changed = format_params(setup.policy, TeamPolicyConfig())
+    lines.append(f"- 策略：TeamPolicy，{'和默认不同的参数：' + changed if changed else '默认参数'}")
+    return lines
+
+
+def _format_members(battle: TeamBattle, summaries: Sequence[MemberSummary]) -> str:
+    header = ["队伍", "宝可梦", "剩余 HP", "剩余能量", "造成伤害", "受到伤害", "快招", "大招", "挨大招：开盾 / 没开", "倒下"]
+    rows = []
+    for s in summaries:
+        team = battle.teams[s.side]
+        counts = Counter(s.charged_moves)
+        charged = ", ".join(f"{move} ×{n}" for move, n in counts.items()) or "—"
+        rows.append([
+            team.setup.name,
+            team.names[s.slot],
+            f"{s.hp} / {s.max_hp}",
+            str(s.energy),
+            str(s.damage_dealt),
+            str(s.damage_taken),
+            str(s.fast_moves),
+            charged,
+            f"{s.charged_shielded} / {s.charged_unshielded}",
+            f"第 {s.fainted_turn} 回合" if s.fainted_turn is not None else "—",
+        ])
+    return format_table(header, rows)
+
+
+def _format_opening(battle: TeamBattle, opening: OpeningMatchups) -> str:
+    mine, theirs = battle.teams[opening.side], battle.teams[1 - opening.side]
+    header = [f"{mine.setup.name} \\ {theirs.setup.name}", *theirs.names]
+    rows = [
+        [name, *(str(r) for r in row)]
+        for name, row in zip(mine.names, opening.ratings)
+    ]
+    return format_table(header, rows)
+
+
+def _decision_for(result: BattleResult, switch: SwitchEvent) -> DecisionEvent | None:
+    """换人对应的决定（同一回合、同一方、换上同一只）。"""
+    found = None
+    for event in result.events:
+        if (
+            isinstance(event, DecisionEvent)
+            and event.turn == switch.turn
+            and event.actor == switch.actor
+            and event.switch_to == switch.to_slot
+        ):
+            found = event
+    return found
+
+
+def _escape(text: str) -> str:
+    """表格格子里的 | 要转义。"""
+    return text.replace("|", "\\|")
+
+
+def _format_switches(battle: TeamBattle, result: BattleResult) -> str:
+    rows = []
+    for event in result.events:
+        if not isinstance(event, SwitchEvent):
+            continue
+        team = battle.teams[event.actor]
+        decision = _decision_for(result, event)
+        rows.append([
+            str(event.turn),
+            team.setup.name,
+            f"{team.names[event.from_slot]} → {team.names[event.to_slot]}",
+            _SWITCH_KINDS[event.kind],
+            _escape(decision.reason) if decision else "",
+        ])
+    if not rows:
+        return "没有换人。"
+    return format_table(["回合", "队伍", "换人", "类型", "原因"], rows)
+
+
+def _format_charged(battle: TeamBattle, result: BattleResult) -> str:
+    rows = []
+    for event in result.events:
+        if not isinstance(event, MoveEvent) or not event.is_charged:
+            continue
+        attacker = battle.teams[event.actor]
+        defender = battle.teams[1 - event.actor]
+        if event.shielded:
+            outcome = "开盾挡下"
+        else:
+            outcome = f"{event.damage} 伤害，剩 HP {event.defender_hp_after}"
+        rows.append([
+            str(event.turn),
+            attacker.names[event.actor_slot],
+            event.move_id,
+            defender.names[event.target_slot],
+            outcome,
+            _escape(event.shield_reason) if event.shield_reason is not None else "没有盾",
+        ])
+    if not rows:
+        return "没有放大招。"
+    return format_table(["回合", "出招", "大招", "挨打", "结果", "开不开盾的原因"], rows)
+
+
+def format_team_battle_report(
+    battle: TeamBattle,
+    result: BattleResult,
+    source: str = "",
+    include_timeline: bool = True,
+) -> str:
+    """完整报告（Markdown）。"""
+    config = battle.config
+    lines: list[str] = []
+    if config.description:
+        lines += [config.description, ""]
+    if source:
+        lines.append(f"- 配置文件：`{source}`")
+    lines.append(f"- 联盟：{league_name(config.league)}；赛季规则：{config.season.name}")
+    changed_rules = format_params(config.rules, PVPOKE_COMPAT)
+    lines.append(f"- 机制规则：{'和 PvPoke 默认不同的：' + changed_rules if changed_rules else '与 PvPoke 一致（默认）'}")
+    for log in battle.gm.custom_log:
+        lines.append(f"- 覆盖文件：{log}")
+    lines.append(
+        "- 策略：双方都是 3v3 策略 TeamPolicy（规则和默认参数见 docs/mechanics.md 13.7）。"
+        "出招照简单规则策略；倒下后换上对位评分最高的；当前对位不好就主动换人；不在必输的对位上开盾"
+    )
+    lines.append(
+        "- 评分：本项目的口径（docs/mechanics.md 13.2 D1），"
+        "500 + 500 ×（己方剩余 HP 比例之和 − 对方剩余 HP 比例之和）÷ 每队只数，向下取整。双方加起来 1000"
+    )
+
+    lines += ["", "## 队伍", ""]
+    for side in (0, 1):
+        lines += _format_team_section(battle, side)
+        lines.append("")
+    size = config.rules.max_team_size
+    mega_limit = config.season.max_megas_per_team
+    mega_text = f"Mega 不超过 {mega_limit} 只" if mega_limit is not None else "Mega 不限"
+    lines.append(f"队伍检查通过：每队 {size} 只；没有同一种宝可梦（按图鉴编号）；{mega_text}。")
+
+    lines += ["", "## 结果", "", format_outcome(battle, result), ""]
+    lines += ["## 每只的情况", ""]
+    lines.append(
+        "挨大招：被大招打中时开盾挡下的次数 / 队伍还有盾但没开的次数。被盾挡下的大招算 1 点伤害。"
+    )
+    lines += ["", _format_members(battle, member_summaries(battle, result)), ""]
+
+    lines += ["## 开局对位评分", ""]
+    lines.append(
+        "TeamPolicy 选人、换人看的就是这种评分：行上那只对列上那只打 1v1，双方满 HP、0 能量，"
+        "盾数从 0 到两队开局的盾数，按 [4, 4, 1] 加权平均（docs/mechanics.md 13.7）。500 是平手。"
+    )
+    openings = opening_matchups(battle)
+    if len(openings) == 1:
+        lines.append(f"从 {battle.teams[0].setup.name} 一方看；{battle.teams[1].setup.name} 一方约等于 1000 减它。")
+    for opening in openings:
+        lines += ["", _format_opening(battle, opening)]
+    lines.append("")
+
+    lines += ["## 换人", "", _format_switches(battle, result), ""]
+    lines += ["## 大招和开盾", "", _format_charged(battle, result), ""]
+
+    if include_timeline:
+        lines += ["## 时间线", ""]
+        lines.append("每回合的决定（decides …，括号里是原因）和结算。T 后面是回合数。")
+        lines += ["", "```text", format_timeline(result.events, timeline_names(battle), show_decisions=True), "```"]
+    return "\n".join(lines).rstrip() + "\n"

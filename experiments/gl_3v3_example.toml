@@ -1,0 +1,50 @@
+# 3v3 配置的例子：README 里的那两队，在超级联盟打一场。格式见 pogo_sim/team_battle.py 开头。运行：
+#   .venv/bin/python -m tools.run_team_battle experiments/gl_3v3_example.toml
+#
+# 没写 IV 和等级，按赛季规则取 IV 排名第 1 和合法的最高等级，所以和 README 里的例子（PvPoke 默认 IV）数字不同。
+
+description = "3v3 例子：Azumarill / Medicham / Registeel 对 Swampert / Altaria / Trevenant，超级联盟，双方都用默认的 3v3 策略。"
+league = 1500
+season = "pvpoke"
+
+# 不写 [rules]：机制与 PvPoke 一致。不写 [policy]：双方都用 TeamPolicy 的默认参数。
+# 想看某一队不主动换人时会怎样，可以在那一队下面加：
+#   [team.policy]
+#   switching = "never"
+
+[[team]]
+name = "Team A"
+
+[[team.member]]
+species = "azumarill"
+fast = "BUBBLE"
+charged = ["ICE_BEAM", "PLAY_ROUGH"]
+
+[[team.member]]
+species = "medicham"
+fast = "COUNTER"
+charged = ["ICE_PUNCH", "PSYCHIC"]
+
+[[team.member]]
+species = "registeel"
+fast = "LOCK_ON"
+charged = ["FOCUS_BLAST", "ZAP_CANNON"]
+
+
+[[team]]
+name = "Team B"
+
+[[team.member]]
+species = "swampert"
+fast = "MUD_SHOT"
+charged = ["HYDRO_CANNON", "EARTHQUAKE"]
+
+[[team.member]]
+species = "altaria"
+fast = "DRAGON_BREATH"
+charged = ["SKY_ATTACK", "MOONBLAST"]
+
+[[team.member]]
+species = "trevenant"
+fast = "SHADOW_CLAW"
+charged = ["SEED_BOMB", "SHADOW_BALL"]

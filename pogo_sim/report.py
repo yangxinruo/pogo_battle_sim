@@ -9,6 +9,7 @@
     print(format_timeline(result.events, (a.name, b.name), show_decisions=True))
 """
 
+import textwrap
 from collections.abc import Sequence
 
 from pogo_sim.battle import BattleResult
@@ -50,10 +51,14 @@ def format_combatant(combatant: Combatant, shields: int | None = None) -> str:
 
 
 def format_team(team: Team) -> str:
-    """一方的配置。现在只支持每队一只（1v1）；3v3 的队伍格式到 3v3-e 再定。"""
-    if len(team.members) != 1:
-        raise NotImplementedError("多于一只的队伍还没有报告格式（3v3-e）")
-    return format_combatant(team.members[0], team.shields)
+    """一方的配置。每队一只（1v1）时就是那一只；多于一只时先写全队的盾，再按出场顺序写每一只。"""
+    if len(team.members) == 1:
+        return format_combatant(team.members[0], team.shields)
+    lines = [f"[{team.index}] team  shields {team.shields}"]
+    for slot, member in enumerate(team.members):
+        role = "lead" if slot == 0 else f"bench {slot}"
+        lines.append(textwrap.indent(f"{role}: {format_combatant(member)}", _INDENT))
+    return "\n".join(lines)
 
 
 def format_setup(teams: Sequence[Team]) -> str:

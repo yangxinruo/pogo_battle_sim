@@ -355,7 +355,7 @@ PvPoke 目前的做法（都是 **参考 PvPoke**，其中多项它自己也说�
   等级 14.5：52 级时 CP 4187 超过 1500，自动降到 CP 不超过上限的最高等级（CP 1498）
   ```
 - **第三个大招**：`make_combatant` 检查，只有带 `extraChargedMoves` 的 Mega 能带，而且第三个只能从 `extraChargedMoves` 里选（前两个不检查招式池，和以前一样）。gamemaster 里 64 只 Mega 中 19 只有（都是 supermega），其余 45 只现在最多两个大招。
-- **每队 Mega 数**：`check_team` 检查，3v3 时用。
+- **每队 Mega 数**：`check_team` 检查，3v3 配置建队时用（13.8）。
 
 完整流程（第 2d 步）：覆盖文件 → `season_build` → `make_combatant` → `Battle` + `SimplePolicy` → 文字报告（`pogo_sim/report.py`：双方配置和 `notes`、结果一行，再接 `format_timeline`）。用法见 README。
 - 例子：Mega 雪妖女（Powder Snow / Avalanche、Shadow Ball、Avalanche+）对超级联盟的玛力露丽，各 2 盾，双方都用默认的简单规则策略。Mega 雪妖女赢（评分 578 : 421）：两次用 Avalanche+ 骗盾，最后用 Avalanche+ 收尾，这一下 52 点伤害含 Mega 等级 4 的 1.3 倍加成（Mega 等级 1 不加成是 40 点）。
@@ -700,7 +700,7 @@ PvPoke 还有一条：当前招式里有 RETURN（报恩）时下限是 2（净�
 ### 12.2 对战配置文件
 `pogo_sim/matchups.py`，格式写在模块开头。TOML，内容是：覆盖文件、联盟（CP 上限）、赛季规则预设（`season.SEASON_PRESETS`：`pvpoke` / `mega_cap_52` / `mega_cap_55` / `mega_plus_2`）、简单规则策略的参数（`[policy]`，双方相同），以及一组测试对象 `[[subject]]` 和一组对手 `[[opponent]]`。每只写种类和配招，可选 `label`、IV、等级、挚友、Mega 等级；不写 IV 和等级时按赛季规则取 IV 排名第 1 和合法的最高等级（第 7 节 `season_build`）。
 
-写错的字段、类型、赛季名、策略参数名和取值都会报错；种类、招式、等级是否合法在建配置时检查，报错信息指出是哪一项。
+一只宝可梦的写法、参数表的检查、报告里的一行说明和 3v3 配置共用（`pogo_sim/config.py`）。写错的字段、类型、赛季名、策略参数名和取值都会报错；种类、招式、等级是否合法在建配置时检查，报错信息指出是哪一项。
 
 每个测试对象对每个对手打九宫格（6.5）。报告是 Markdown：设置、双方配置、总表（九场赢几场、平均评分）、每一对的九宫格。
 
@@ -760,7 +760,7 @@ PvPoke 还有一条：当前招式里有 RETURN（报恩）时下限是 2（净�
 | 3v3-d1 | 对位评估（D2）；3v3 策略的框架：倒下后换上评分最高的，不主动换人（D3 的 (a)） | 完成 |
 | 3v3-d2 | 按阈值主动换人（D3 的 (b)，默认）；不花回合的换人机会 | 完成 |
 | 3v3-d3 | 全队一起考虑的开盾（不在必输的对位上开盾）；3v3 里的骗盾（不另加规则） | 完成 |
-| 3v3-e | 3v3 配置文件与报告 | |
+| 3v3-e | 3v3 配置文件与报告；队伍检查（只数、同一种不能带两只、Mega 数） | 完成 |
 | 3v3-f | 批量矩阵：环境前 N（Mega / 非 Mega 分开）的 1v1 九宫格矩阵；队伍对队伍 | |
 | 3v3-g | 对固定对手策略的最优应对（搜索） | |
 
@@ -879,3 +879,40 @@ PvPoke 没有可复现的 3v3（13.1），所以对照的是：给定同一个�
 *骗盾*：照简单规则策略（对手有盾就先放便宜的招），3v3 不另加规则。
 
 **例子**：README 里那两队双方都用默认的 `TeamPolicy`，B 赢，评分 387 vs 612，126 回合。换人 7 次：3 次大招后的 0 回合换人、1 次主动换人、3 次倒下后换人；有 3 次"留盾给后面"。两种重算方式这一场结果完全一样（一般不保证）。只保留"倒下后换上评分最高的"（`switching = "never"`、`save_shields_for_bench = False`）时：第 56 回合 A 换上对 Altaria 评分 724 的 Registeel，而不是排在前面、评分 387 的 Medicham；B 赢，评分 374 vs 625，123 回合。
+
+### 13.8 3v3 配置文件与报告（3v3-e）
+`pogo_sim/team_battle.py`，格式写在模块开头，例子 `experiments/gl_3v3_example.toml`，用 `tools/run_team_battle.py` 运行，报告写进 `docs/experiments/`。
+
+**配置**（TOML）：
+- 和 1v1 配置相同的部分：覆盖文件、联盟、赛季规则预设；一只宝可梦的写法同 `[[subject]]`（种类、配招，可选 label、IV、等级、挚友、Mega 等级、`outside_movepool`），不写 IV 和等级时按赛季规则取 IV 排名第 1 和合法的最高等级。
+- `[[team]]` 正好两队，第一队是第 0 方；每队有 `name`（两队不能同名）、可选 `shields`（默认 2），`[[team.member]]` 按出场顺序写，第一只是首发。
+- `[policy]`：双方的 `TeamPolicyConfig`，子表 `[policy.moves]`、`[policy.evaluation]` 是两个 `SimplePolicyConfig`。`[team.policy]` 只改这一队，逐项覆盖 `[policy]`（子表也逐项合并）。不写就是默认的 `TeamPolicy`。
+- `[rules]`：`BattleRules` 的字段（例如 `timeout_result`、`switch_cooldown_ms`），不写就与 PvPoke 一致。`mega_move_bonus` 这种元组不能在配置里改。
+- 写错的字段、类型、取值都会报错，信息里指出是第几队、第几只。
+
+**队伍检查**（建配置时；`season.check_team` 和 `team_battle.py`）：
+- 每队正好 `BattleRules.max_team_size` 只（默认 3，D6）。
+- 同一种宝可梦不能带两只：按图鉴编号判断，普通和暗影、普通和 Mega、不同地区形态都算同一种（D6，用户确认 2026-11-19）。
+- Mega 不超过赛季规则的 `max_megas_per_team`（默认 1）。
+- 同一队里名字（label）不能重复。两队都有的名字（镜像）在时间线和报告里后面加队名，例如 `Azumarill (Team A)`。
+
+**报告**（Markdown），按顺序：
+1. 设置：配置文件、联盟和赛季规则、和 PvPoke 默认不同的机制规则、覆盖文件、策略和评分口径。
+2. 两队：每只一行（CP、等级、IV、配招），策略参数（和默认不同的）；队伍检查通过。
+3. 结果：谁赢、评分、剩余只数和盾、回合数、对战时间。
+4. 每只的情况：剩余 HP 和能量、造成和受到的伤害（被盾挡下算 1，倒下时的溢出伤害也算）、快招次数、放了哪些大招、挨大招时开盾 / 有盾没开的次数、哪一回合倒下。
+5. 开局对位评分：一队每一只对另一队每一只的对位评估（13.7，满 HP、0 能量、两队开局的盾数），就是 TeamPolicy 选人、换人看的评分。两队评估配置相同时只列第 0 方的（第 1 方约等于 1000 减它）。
+6. 换人：每次换人的回合、类型和策略给的原因。
+7. 大招和开盾：每个大招的结果和开不开盾的原因。
+8. 带原因的完整时间线（`--no-timeline` 不附）。
+
+对战是确定的（概率效果用计数器），同一个配置每次结果相同。配置文件只是换个写法：和直接用同样的配置、`TeamPolicy` 打一场完全相同（测试里核对）。
+
+**例子**：README 里那两队，但不写 IV，用 IV 排名第 1（和 README 用的 PvPoke 默认 IV 不同）。B 赢，评分 221 vs 778，100 回合：第 31 回合 B 在 Swampert 的大招后 0 回合换上 Trevenant（对 Azumarill 评分 644），Trevenant 一只打倒了 A 的三只。结果在 `docs/experiments/gl_3v3_example.md`。
+
+**顺带的改动**：
+- 1v1 配置（`matchups.py`）的共用部分移到 `config.py`，行为和报错信息不变（`docs/experiments/mega_zygarde_ml.md` 重新生成后逐字相同）。
+- 时间线里名字一栏补齐到 16 个字符，更长的名字以前会和后面的字连在一起（例如 `Thundurus (Incarnate) (Shadow)`，也影响 1v1），现在后面至少空两格。16 个字符以内的输出不变。
+- `report.format_setup` 支持多于一只的队伍。
+
+**测试**：`tests/test_team_battle.py`（示例配置的结果、和直接打一场相同、策略和规则参数、每队的盾、镜像的名字、每只的统计加起来对得上、开局对位评分、报告内容、留盾在报告里的样子、写错的配置 20 多种、队伍检查），`tests/test_season.py`（同一种：暗影、Mega、地区形态），`tests/test_team.py`（队伍的配置文字）。

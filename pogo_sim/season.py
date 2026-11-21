@@ -1,4 +1,4 @@
-"""赛季规则：等级上限（含 Mega 的特殊上限）、CP 超上限的 Mega 怎么处理、每队几只 Mega。
+"""赛季规则：等级上限（含 Mega 的特殊上限）、CP 超上限的 Mega 怎么处理、每队几只 Mega；队伍检查（check_team）。
 
 按赛季规则建立配置（等级、IV）用 season_build；它会把"为什么是这个等级和 IV"写进 build.notes。
 说明见 docs/mechanics.md 第 7 节和 9.1。
@@ -263,7 +263,23 @@ def season_build(
 
 
 def check_team(gm: GameMaster, builds: Sequence[PokemonBuild], season: SeasonRules) -> None:
-    """检查一队是否符合赛季规则（目前只检查 Mega 数量）。不符合时报错。"""
+    """检查一队是否符合队伍规则。不符合时报错。
+
+    - 同一种宝可梦不能带两只：按图鉴编号判断，所以普通和暗影、普通和 Mega、不同地区形态都算同一种
+      （GBL 规则，用户确认 2026-11-19，docs/mechanics.md 13.2 D6）。
+    - Mega 不超过 season.max_megas_per_team 只。
+    只数不在这里检查（BattleRules.max_team_size，见 Battle 和 team_battle.py）。
+    """
+    by_dex: dict[int, list[str]] = {}
+    for build in builds:
+        by_dex.setdefault(gm.get_species(build.species_id).dex, []).append(build.species_id)
+    for dex, species_ids in by_dex.items():
+        if len(species_ids) > 1:
+            raise ValueError(
+                f"同一种宝可梦不能带两只（图鉴编号 #{dex} 相同，暗影、Mega、地区形态都算同一种）："
+                + "、".join(species_ids)
+            )
+
     limit = season.max_megas_per_team
     if limit is None:
         return

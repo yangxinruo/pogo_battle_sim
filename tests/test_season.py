@@ -213,7 +213,7 @@ def test_notes_do_not_affect_equality() -> None:
     assert a == b
 
 
-# ---- 每队 Mega 数量 ----
+# ---- 队伍检查：每队 Mega 数量、同一种不能带两只 ----
 
 
 def test_team_mega_limit(gm: GameMaster) -> None:
@@ -225,6 +225,23 @@ def test_team_mega_limit(gm: GameMaster) -> None:
     with pytest.raises(ValueError, match="每队最多 1 只 Mega.*froslass_mega、lucario_mega"):
         check_team(gm, [froslass, azumarill, lucario], PVPOKE_SEASON)
     check_team(gm, [froslass, lucario], SeasonRules(name="不限", max_megas_per_team=None))
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (("swampert", "MUD_SHOT", ["HYDRO_CANNON"]), ("swampert_shadow", "MUD_SHOT", ["HYDRO_CANNON"])),  # 暗影
+        (("froslass", "POWDER_SNOW", ["AVALANCHE"]), ("froslass_mega", *FROSLASS_MEGA_MOVES)),  # Mega
+        (("marowak", "MUD_SLAP", ["BONE_CLUB"]), ("marowak_alolan", "FIRE_SPIN", ["BONE_CLUB"])),  # 地区形态
+    ],
+)
+def test_team_same_dex_number(gm: GameMaster, first: tuple, second: tuple) -> None:
+    """同一种宝可梦不能带两只，按图鉴编号判断。"""
+    azumarill = season_build(gm, "azumarill", 1500, "BUBBLE", ["ICE_BEAM"])
+    builds = [season_build(gm, species, 1500, fast, charged) for species, fast, charged in (first, second)]
+    check_team(gm, [builds[0], azumarill], PVPOKE_SEASON)
+    with pytest.raises(ValueError, match=f"同一种宝可梦不能带两只.*{first[0]}、{second[0]}"):
+        check_team(gm, [builds[0], azumarill, builds[1]], PVPOKE_SEASON)
 
 
 # ---- 第三个大招 ----

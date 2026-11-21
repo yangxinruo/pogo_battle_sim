@@ -136,6 +136,14 @@ def _name(names: Names, side: int, slot: int) -> str:
     return entry if isinstance(entry, str) else entry[slot]
 
 
+_NAME_WIDTH = 16
+
+
+def _column(name: str) -> str:
+    """行首的名字一栏：补齐到 16 个字符；更长的名字后面至少空两格，免得和后面的字连在一起。"""
+    return name.ljust(_NAME_WIDTH) if len(name) < _NAME_WIDTH else name + "  "
+
+
 def _format_effects(effects: tuple[EffectApplied, ...], names: Names, event: MoveEvent) -> str:
     parts = []
     for effect in effects:
@@ -160,7 +168,7 @@ def format_event(event: Event, names: Names) -> str:
     """一行文字描述一个事件。names 见 Names。"""
     match event:
         case DecisionEvent():
-            prefix = f"T{event.turn:>4}  {_name(names, event.actor, event.actor_slot):<16}"
+            prefix = f"T{event.turn:>4}  {_column(_name(names, event.actor, event.actor_slot))}"
             if event.switch_to is not None:
                 target = _name(names, event.actor, event.switch_to)
                 return f"{prefix}decides {event.action} -> {target}  ({event.reason})"
@@ -168,7 +176,7 @@ def format_event(event: Event, names: Names) -> str:
                 return f"{prefix}decides not to switch  ({event.reason})"
             return f"{prefix}decides {event.action} {event.move_id}  ({event.reason})"
         case MoveEvent():
-            prefix = f"T{event.turn:>4}  {_name(names, event.actor, event.actor_slot):<16}"
+            prefix = f"T{event.turn:>4}  {_column(_name(names, event.actor, event.actor_slot))}"
             kind = "CHARGED" if event.is_charged else "fast"
             line = (
                 f"{prefix}{kind} {event.move_id} -> {event.damage} dmg"
@@ -182,12 +190,12 @@ def format_event(event: Event, names: Names) -> str:
                 line += f"  [effects: {_format_effects(event.effects, names, event)}]"
             return line
         case CancelledEvent():
-            prefix = f"T{event.turn:>4}  {_name(names, event.actor, event.actor_slot):<16}"
+            prefix = f"T{event.turn:>4}  {_column(_name(names, event.actor, event.actor_slot))}"
             return f"{prefix}{event.move_id} cancelled ({event.reason})"
         case FaintEvent():
-            return f"T{event.turn:>4}  {_name(names, event.actor, event.slot):<16}FAINTS"
+            return f"T{event.turn:>4}  {_column(_name(names, event.actor, event.slot))}FAINTS"
         case SwitchEvent():
-            prefix = f"T{event.turn:>4}  {_name(names, event.actor, event.from_slot):<16}"
+            prefix = f"T{event.turn:>4}  {_column(_name(names, event.actor, event.from_slot))}"
             line = f"{prefix}{_SWITCH_TEXT[event.kind]} {_name(names, event.actor, event.to_slot)}"
             details = []
             if event.wait_ms:

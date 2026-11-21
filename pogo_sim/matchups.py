@@ -29,55 +29,50 @@
     ...
 
 九宫格里的评分都是从测试对象一方看的 PvPoke 对战评分（battle.battle_rating），大于 500 算赢。
+
+一只宝可梦的写法、参数表的检查、报告里的一行说明和 3v3 配置（team_battle.py）共用，在 config.py。
 """
 
-import tomllib
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, get_args, get_origin, get_type_hints
+from typing import Any
 
 from pogo_sim.battle import Battle, BattleResult
-from pogo_sim.combatant import PokemonBuild, make_combatant
+from pogo_sim.combatant import make_combatant
+from pogo_sim.config import (  # 共用部分；REPO_ROOT、Entry、Participant 也从这里导入
+    REPO_ROOT,
+    ConfigError,
+    Entry,
+    Participant,
+    check_unknown_keys,
+    error_message,
+    format_participant,
+    format_table,
+    load_toml,
+    marked,
+    parse_entry,
+    parse_params,
+    prepare_entry,
+    resolve_path,
+)
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
-from pogo_sim.moveset import Moveset, moves_outside_movepool
-from pogo_sim.season import SEASON_PRESETS, SeasonRules, league_name, season_build
+from pogo_sim.season import SEASON_PRESETS, SeasonRules, league_name
 from pogo_sim.simple_policy import SimplePolicy, SimplePolicyConfig
-from pogo_sim.stats import IVs, calculate_cp
 from pogo_sim.team import Team
-
-REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
 SHIELD_COUNTS: tuple[int, ...] = (0, 1, 2)
 WIN_RATING = 500  # 评分大于 500 算赢（一方倒下时，赢家的评分一定大于 500，见 battle.battle_rating）
 
 _TOP_LEVEL_KEYS = {"description", "custom_files", "league", "season", "policy", "subject", "opponent"}
-_ENTRY_KEYS = {
-    "label", "species", "fast", "charged",
-    "ivs", "level", "best_buddy", "mega_level", "outside_movepool",
-}
 _GROUP_NAMES = {"subject": "测试对象", "opponent": "对手"}
 
 
-class MatchupConfigError(ValueError):
-    """对战配置文件写错了。"""
+# 配置写错时的异常（和 3v3 配置共用，见 config.ConfigError）
+MatchupConfigError = ConfigError
 
 
 # ---- 配置 ----
-
-
-@dataclass(frozen=True)
-class Entry:
-    """配置文件里的一只宝可梦（还没按赛季规则建配置）。"""
-
-    label: str | None  # None：用宝可梦名
-    species_id: str
-    moveset: Moveset
-    ivs: IVs | None = None
-    level: float | None = None
-    best_buddy: bool = False
-    mega_level: int | None = None
-    outside_movepool: bool = False
 
 
 @dataclass(frozen=True)
@@ -94,13 +89,10 @@ class MatchupConfig:
 def load_matchup_config(path: Path | str) -> MatchupConfig:
     """读取并检查对战配置文件（格式见模块说明）。写错时抛出 MatchupConfigError。"""
     path = Path(path)
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
+    raw = load_toml(path)
     where = path.name
 
-    unknown = set(raw) - _TOP_LEVEL_KEYS
-    if unknown:
-        raise MatchupConfigError(f"{where}：不认识的字段 {', '.join(sorted(unknown))}")
+    check_unknown_keys(raw, _TOP_LEVEL_KEYS, where)
     for key in ("league", "season", "subject", "opponent"):
         if key not in raw:
             raise MatchupConfigError(f"{where}：缺少 {key}")
@@ -120,105 +112,22 @@ def load_matchup_config(path: Path | str) -> MatchupConfig:
 
     return MatchupConfig(
         description=str(raw.get("description", "")),
-        custom_files=tuple(_resolve(p) for p in custom_files),
+        custom_files=tuple(resolve_path(p) for p in custom_files),
         league=league,
         season=SEASON_PRESETS[season_key],
-        policy=_parse_policy(raw.get("policy", {}), where),
+        policy=parse_params(SimplePolicyConfig, raw.get("policy", {}), where, "策略参数"),
         subjects=_parse_group(raw["subject"], f"{where}：subject"),
         opponents=_parse_group(raw["opponent"], f"{where}：opponent"),
     )
 
 
-def _resolve(path: str) -> Path:
-    p = Path(path)
-    return p if p.is_absolute() else REPO_ROOT / p
-
-
-def _parse_policy(raw: dict[str, Any], where: str) -> SimplePolicyConfig:
-    """[policy] 表：只能写 SimplePolicyConfig 里有的参数，值的类型要对。"""
-    hints = get_type_hints(SimplePolicyConfig)
-    for key, value in raw.items():
-        if key not in hints:
-            raise MatchupConfigError(
-                f"{where}：不认识的策略参数 {key}（可用：{', '.join(hints)}）"
-            )
-        hint = hints[key]
-        if get_origin(hint) is Literal:
-            ok = value in get_args(hint)
-            expected = " / ".join(repr(v) for v in get_args(hint))
-        elif hint is bool:
-            ok = isinstance(value, bool)
-            expected = "true / false"
-        else:  # float
-            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
-            expected = "数字"
-        if not ok:
-            raise MatchupConfigError(f"{where}：策略参数 {key} 要写 {expected}，得到 {value!r}")
-    return SimplePolicyConfig(**raw)
-
-
 def _parse_group(raw: Any, where: str) -> tuple[Entry, ...]:
     if not isinstance(raw, list) or not raw:
         raise MatchupConfigError(f"{where}：至少要写一个（[[...]] 表）")
-    return tuple(_parse_entry(item, f"{where} 第 {i + 1} 项") for i, item in enumerate(raw))
-
-
-def _parse_entry(raw: dict[str, Any], where: str) -> Entry:
-    unknown = set(raw) - _ENTRY_KEYS
-    if unknown:
-        raise MatchupConfigError(f"{where}：不认识的字段 {', '.join(sorted(unknown))}")
-    for key in ("species", "fast", "charged"):
-        if key not in raw:
-            raise MatchupConfigError(f"{where}：缺少 {key}")
-
-    def check(key: str, ok: bool, expected: str) -> None:
-        if key in raw and not ok:
-            raise MatchupConfigError(f"{where}：{key} 要写{expected}，得到 {raw[key]!r}")
-
-    check("label", isinstance(raw.get("label"), str), "字符串")
-    check("species", isinstance(raw.get("species"), str), "字符串")
-    check("fast", isinstance(raw.get("fast"), str), "字符串")
-    charged = raw["charged"]
-    check("charged", isinstance(charged, list) and all(isinstance(m, str) for m in charged), "字符串列表")
-    ivs = raw.get("ivs")
-    check(
-        "ivs",
-        isinstance(ivs, list) and len(ivs) == 3 and all(isinstance(v, int) for v in ivs),
-        " 3 个整数（攻 / 防 / HP）",
-    )
-    level = raw.get("level")
-    check("level", isinstance(level, (int, float)) and not isinstance(level, bool), "数字")
-    check("best_buddy", isinstance(raw.get("best_buddy"), bool), " true / false")
-    mega_level = raw.get("mega_level")
-    check("mega_level", isinstance(mega_level, int) and not isinstance(mega_level, bool), "整数")
-    check("outside_movepool", isinstance(raw.get("outside_movepool"), bool), " true / false")
-
-    try:
-        parsed_ivs = IVs(*ivs) if ivs is not None else None
-    except ValueError as e:
-        raise MatchupConfigError(f"{where}：{e}") from e
-    return Entry(
-        label=raw.get("label"),
-        species_id=raw["species"],
-        moveset=Moveset(raw["fast"], tuple(charged)),
-        ivs=parsed_ivs,
-        level=float(level) if level is not None else None,
-        best_buddy=raw.get("best_buddy", False),
-        mega_level=mega_level,
-        outside_movepool=raw.get("outside_movepool", False),
-    )
+    return tuple(parse_entry(item, f"{where} 第 {i + 1} 项") for i, item in enumerate(raw))
 
 
 # ---- 按赛季规则建配置 ----
-
-
-@dataclass(frozen=True)
-class Participant:
-    """按赛季规则建好配置的一只宝可梦。"""
-
-    label: str
-    build: PokemonBuild
-    outside_movepool: tuple[str, ...]  # 配置里允许的招式池外招式；没有时为空
 
 
 @dataclass(frozen=True)
@@ -249,10 +158,9 @@ def _prepare_group(
     for i, entry in enumerate(entries):
         where = f"{_GROUP_NAMES[group]}第 {i + 1} 项（{entry.label or entry.species_id}）"
         try:
-            participants.append(_prepare_entry(gm, config, entry))
+            participants.append(prepare_entry(gm, entry, config.league, config.season))
         except (KeyError, ValueError) as e:
-            message = e.args[0] if e.args else str(e)
-            raise MatchupConfigError(f"{where}：{message}") from e
+            raise MatchupConfigError(f"{where}：{error_message(e)}") from e
 
     labels = [p.label for p in participants]
     duplicates = sorted({label for label in labels if labels.count(label) > 1})
@@ -261,33 +169,6 @@ def _prepare_group(
             f"{_GROUP_NAMES[group]}里有重名的 {', '.join(duplicates)}：同一种宝可梦写了几套配招时，给每套写 label"
         )
     return tuple(participants)
-
-
-def _prepare_entry(gm: GameMaster, config: MatchupConfig, entry: Entry) -> Participant:
-    species = gm.get_species(entry.species_id)
-    outside = moves_outside_movepool(species, entry.moveset)
-    if outside and not entry.outside_movepool:
-        raise ValueError(
-            f"{entry.species_id} 的招式池里没有 {', '.join(outside)}。"
-            "要试招式池外的招，给这套配招写 outside_movepool = true，或者用覆盖文件改招式池"
-        )
-    build = season_build(
-        gm,
-        entry.species_id,
-        config.league,
-        entry.moveset.fast,
-        entry.moveset.charged,
-        season=config.season,
-        ivs=entry.ivs,
-        level=entry.level,
-        best_buddy=entry.best_buddy,
-        mega_level=entry.mega_level,
-    )
-    if outside:
-        note = f"招式池外的招式：{', '.join(outside)}（配置里写了 outside_movepool = true）"
-        build = replace(build, notes=build.notes + (note,))
-    make_combatant(gm, build, 0)  # 提前检查招式（快招 / 大招、第三个大招的规则）
-    return Participant(entry.label or species.name, build, tuple(outside))
 
 
 # ---- 对战和九宫格 ----
@@ -366,45 +247,18 @@ def find_participant(group: Sequence[Participant], label: str) -> Participant:
 # ---- 报告（Markdown） ----
 
 
-def _table(header: list[str], rows: list[list[str]]) -> str:
-    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
-    lines += ["| " + " | ".join(row) + " |" for row in rows]
-    return "\n".join(lines)
-
-
-def _marked(participant: Participant) -> str:
-    """招式池外的配招在名字后面加 *。"""
-    return participant.label + ("*" if participant.outside_movepool else "")
-
-
-def format_participant(gm: GameMaster, participant: Participant) -> str:
-    """一行说明，例如"Dragon Tail：Zygarde (Mega)，CP 8568，50 级，IV 15/15/15，DRAGON_TAIL / CRUNCH, ..."。"""
-    build = participant.build
-    species = gm.get_species(build.species_id)
-    ivs = build.ivs
-    cp = calculate_cp(species.base_stats, ivs, build.level)
-    moves = Moveset(build.fast_move_id, build.charged_move_ids).describe()
-    line = (
-        f"{_marked(participant)}：{species.name}，CP {cp}，{build.level:g} 级，"
-        f"IV {ivs.atk}/{ivs.def_}/{ivs.hp}，{moves}"
-    )
-    if participant.outside_movepool:
-        line += f"（招式池外：{', '.join(participant.outside_movepool)}）"
-    return line
-
-
 def format_summary(matchups: Matchups, grids: Sequence[ShieldGrid]) -> str:
     """总表：行是测试对象，列是对手，每格是九宫格里赢了几场和平均评分。"""
     by_pair = {(g.subject, g.opponent): g for g in grids}
-    header = ["测试对象 \\ 对手", *(_marked(o) for o in matchups.opponents)]
+    header = ["测试对象 \\ 对手", *(marked(o) for o in matchups.opponents)]
     rows = []
     for subject in matchups.subjects:
         cells = []
         for opponent in matchups.opponents:
             grid = by_pair[(subject.label, opponent.label)]
             cells.append(f"{grid.wins}/9 胜，平均 {grid.average:.0f}")
-        rows.append([_marked(subject), *cells])
-    return _table(header, rows)
+        rows.append([marked(subject), *cells])
+    return format_table(header, rows)
 
 
 def format_grid(grid: ShieldGrid) -> str:
@@ -414,7 +268,7 @@ def format_grid(grid: ShieldGrid) -> str:
         [f"自己 {mine} 盾", *(str(r) for r in grid.ratings[mine])]
         for mine in SHIELD_COUNTS
     ]
-    return _table(header, rows)
+    return format_table(header, rows)
 
 
 def format_report(matchups: Matchups, grids: Sequence[ShieldGrid], source: str = "") -> str:

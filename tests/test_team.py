@@ -9,6 +9,7 @@ from pogo_sim.battle import Battle
 from pogo_sim.combatant import Combatant, league_build, make_combatant
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
 from pogo_sim.policy import BattleView, ScriptedCharged, ScriptedPolicy
+from pogo_sim.report import format_setup
 from pogo_sim.team import Team
 
 
@@ -94,3 +95,13 @@ def test_battle_checks_teams(gm: GameMaster) -> None:
     four = (*_three(gm, 0), _great_league(gm, 0, "swampert", "MUD_SHOT", ("HYDRO_CANNON",)))
     with pytest.raises(ValueError, match="每队最多 3 只"):
         Battle((Team(four, 2), Team((b,), 0)), policies)
+
+
+def test_format_setup_for_a_team(gm: GameMaster) -> None:
+    """多于一只的队伍：先写全队的盾，再按出场顺序写每一只（3v3-e）。"""
+    lines = format_setup([Team(_three(gm, 1), shields=2)]).splitlines()
+    assert lines[0] == "[1] team  shields 2"
+    assert lines[1] == "    lead: [1] Azumarill  CP 1499  level 43  IV 4/15/13"
+    assert lines[4] == "    bench 1: [1] Medicham  CP 1500  level 49  IV 7/15/14"
+    assert lines[5] == "        HP 141  atk 106.92  def 139.50"
+    assert lines[7].startswith("    bench 2: [1] Registeel")
