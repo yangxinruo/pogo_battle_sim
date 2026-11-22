@@ -1,0 +1,48 @@
+# 对战配置：Mega 雪妖女（未发布，自定义数据）在 Mega 超级联盟对环境前 N。格式见 pogo_sim/matchups.py 开头。运行：
+#   .venv/bin/python -m tools.run_matchups experiments/gl_mega_froslass_top.toml
+#
+# 对手来自 PvPoke 的 Mega 版超级联盟排名（data/rankings/mega/overall/rankings-1500.json，commit d02018e，
+# 与 data/ 的 gamemaster 快照相同）：Mega 和非 Mega 分开取前 N，配招用 PvPoke 的推荐。
+# 双方都不写 IV：按赛季规则取 IV 排名第 1 和合法的最高等级。
+
+description = "Mega 雪妖女在 Mega 超级联盟：两套快招，以及普通雪妖女作对照，对 PvPoke 排名里的 Mega 前 10、非 Mega 前 50。"
+custom_files = ["data/custom/mega_froslass.toml"]
+league = 1500
+season = "pvpoke"
+
+
+# ---- 测试对象 ----
+# 大招都带 Avalanche、Shadow Ball 和假设的专属招式 Avalanche+（见覆盖文件）。
+
+[[subject]]
+label = "Mega Froslass (Powder Snow)"
+species = "froslass_mega"
+fast = "POWDER_SNOW"
+charged = ["AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"]
+
+[[subject]]
+label = "Mega Froslass (Hex)"
+species = "froslass_mega"
+fast = "HEX"
+charged = ["AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"]
+
+[[subject]]
+label = "Froslass"  # 普通雪妖女，对照
+species = "froslass"
+fast = "POWDER_SNOW"
+charged = ["AVALANCHE", "SHADOW_BALL"]
+
+
+# ---- 对手：环境前 N ----
+
+[[opponent_pool]]
+name = "Mega 前 10"
+rankings = "mega"
+kind = "mega"
+top = 10
+
+[[opponent_pool]]
+name = "非 Mega 前 50"
+rankings = "mega"
+kind = "non_mega"
+top = 50

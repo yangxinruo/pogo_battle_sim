@@ -704,6 +704,8 @@ PvPoke 还有一条：当前招式里有 RETURN（报恩）时下限是 2（净�
 
 每个测试对象对每个对手打九宫格（6.5）。报告是 Markdown：设置、双方配置、总表（九场赢几场、平均评分）、每一对的九宫格。
 
+对手也可以是 PvPoke 排名里的环境前 N（`[[opponent_pool]]`，13.9），和手写的对手可以同时写。
+
 ```bash
 .venv/bin/python -m tools.run_matchups experiments/mega_zygarde_ml.toml
 .venv/bin/python -m tools.run_matchups experiments/mega_zygarde_ml.toml --output docs/experiments/mega_zygarde_ml.md
@@ -714,6 +716,7 @@ PvPoke 还有一条：当前招式里有 RETURN（报恩）时下限是 2（净�
 | 文件 | 内容 | 结果 |
 |---|---|---|
 | `experiments/mega_zygarde_ml.toml` | Mega 基格尔德（三套配招）在大师联盟对原始盖欧卡、Mega 超梦Y（Thunderbolt / Ice Beam / 招式池外的 Avalanche）、酋雷姆（白）、洛奇亚 | `docs/experiments/mega_zygarde_ml.md` |
+| `experiments/gl_mega_froslass_top.toml` | Mega 雪妖女（Powder Snow / Hex）和普通雪妖女在 Mega 超级联盟，对 PvPoke 排名的 Mega 前 10、非 Mega 前 50（13.9） | `docs/experiments/gl_mega_froslass_top.md` |
 
 结果来自本项目的引擎和简单规则策略，不是 PvPoke 的结果；配置里没有说明的对手配招来自 PvPoke 的排名推荐。
 
@@ -747,7 +750,10 @@ PvPoke 还有一条：当前招式里有 RETURN（报恩）时下限是 2（净�
 - **D2 对位评估**（换人、选人、开盾都要用）：照 PvPoke 的思路，用本项目的 1v1 引擎和简单规则策略，从当前状态（HP、能量、能力等级）开始打；双方盾数从 0 到当前值的每种组合按 [4, 4, 1] 加权平均。用户提醒 3v3 里可能要更复杂（例如考虑后备），到 3v3-d 再细化。
 - **D3 换人策略**：两种都做。(b) 当前对位评分低于阈值、后备里有明显更好的就换——默认；(a) 不主动换人，只在倒下后选对位评分最高的——作为对照的基准。
 - **D4 博弈树搜索**：先只做"对固定对手策略的最优应对"（3v3-g）。双方同时决定的完整博弈不做。
-- **D5 环境前 N**：用 PvPoke 的排名文件。有 Mega 的规则下，排名前列大多是 Mega，但每队只能带一只，所以 **Mega 和非 Mega 分开取前 N**。
+- **D5 环境前 N**：用 PvPoke 的排名文件。有 Mega 的规则下，排名前列大多是 Mega，但每队只能带一只，所以 **Mega 和非 Mega 分开取前 N**。用户 2026-11-21 又定了三点：
+  - 排名里取来的宝可梦默认用 IV 排名第 1、等级按赛季规则（和配置文件不写 IV 时一样），另有开关改成 PvPoke 默认 IV；
+  - 队伍对队伍（3v3-f2）时，对手队伍是配置里手写的，加上从环境前 N 随机抽的若干队（固定随机种子，可复现；每队最多 1 只 Mega、同一种不重复、出场顺序也随机；报告列出每一队）；
+  - 排名文件原样存进 `data/rankings/`（`all` 和 `mega` 两套 × 超级 / 高级 / 大师联盟，共约 5.3 MB），`data/SOURCE.md` 记 commit 和 SHA-256。
 - **D6 队伍规则**：3 只（首发 + 2 后备）；同一种宝可梦不能带两只，按图鉴编号判断，所以普通和暗影、普通和 Mega、不同地区形态都算同一种（用户确认，2026-11-19）。6 选 3 不做。
 - **时间到**（Q19）：游戏规则是双方都还有宝可梦就平局（默认）。评估时有的对局会很拖，所以另做几种可选的判定标准（3v3-b）。
 
@@ -761,7 +767,8 @@ PvPoke 还有一条：当前招式里有 RETURN（报恩）时下限是 2（净�
 | 3v3-d2 | 按阈值主动换人（D3 的 (b)，默认）；不花回合的换人机会 | 完成 |
 | 3v3-d3 | 全队一起考虑的开盾（不在必输的对位上开盾）；3v3 里的骗盾（不另加规则） | 完成 |
 | 3v3-e | 3v3 配置文件与报告；队伍检查（只数、同一种不能带两只、Mega 数） | 完成 |
-| 3v3-f | 批量矩阵：环境前 N（Mega / 非 Mega 分开）的 1v1 九宫格矩阵；队伍对队伍 | |
+| 3v3-f1 | PvPoke 排名快照；1v1 对环境前 N（Mega / 非 Mega 分开）的批量九宫格 | 完成 |
+| 3v3-f2 | 队伍对队伍：我方的队伍对手写的和随机抽的很多队打 3v3 | |
 | 3v3-g | 对固定对手策略的最优应对（搜索） | |
 
 ### 13.4 队伍结构（3v3-a）
@@ -916,3 +923,31 @@ PvPoke 没有可复现的 3v3（13.1），所以对照的是：给定同一个�
 - `report.format_setup` 支持多于一只的队伍。
 
 **测试**：`tests/test_team_battle.py`（示例配置的结果、和直接打一场相同、策略和规则参数、每队的盾、镜像的名字、每只的统计加起来对得上、开局对位评分、报告内容、留盾在报告里的样子、写错的配置 20 多种、队伍检查），`tests/test_season.py`（同一种：暗影、Mega、地区形态），`tests/test_team.py`（队伍的配置文字）。
+
+### 13.9 环境前 N（3v3-f1）
+**排名快照**：`data/rankings/<cup>/overall/rankings-<CP 上限>.json`，PvPoke commit `d02018e`（和 gamemaster 相同），原样保存，SHA-256 和条目数记在 `data/SOURCE.md`（`tests/test_rankings.py` 核对）。两套排名：
+- `all`：普通的超级 / 高级 / 大师联盟，不含 Mega；
+- `mega`：Mega 版联盟，Mega 和非 Mega 一起排（超级联盟里第 1 名是 Mega 勾魂眼，第 2 名起是非 Mega，第二只 Mega 是第 32 名）。
+
+本项目只用每一条的名次（在文件里的顺序）、种类、推荐配招（`moveset`，Mega 可能带第三个大招）和综合分；对战结果全部用本项目的引擎和策略重新算，不用 PvPoke 排名里的对战结果。
+
+**取环境前 N**（`pogo_sim/rankings.py`）：
+- 按 D5，Mega 和非 Mega 分开取：`kind = "mega"` / `"non_mega"`，在这一类里按名次数前 N 只。报告里写排名文件里的名次（两类一起排），所以非 Mega 前 50 的名次是 2、3、4……52（跳过第 32 名的 Mega 乌贼王）。
+- IV 和等级：默认 IV 排名第 1，等级按赛季规则（和配置文件不写 IV 时一样，第 7 节 `season_build`）；`ivs = "pvpoke_default"` 改成 PvPoke 默认 IV（gamemaster 的 `defaultIVs`，大师联盟 50 级 15/15/15，同 `combatant.league_build`），方便对照 PvPoke。这时等级照 PvPoke，不跟赛季规则走（CP 超过上限的 Mega 仍按赛季规则降等级）。
+- 前 N 名里建不了配置的（例如这个赛季规则下没有合法等级）跳过，报告里写明是哪几只、为什么，不往后补。一次性扫过：六个文件、两类各前 100 只、四种赛季规则、两种 IV 规则，都没有建不了的。
+- 名字用宝可梦名（暗影、地区形态的名字里带括号），同一组里不会重复。
+- 建配置主要花在 IV 排名上，一只约 20 毫秒，前 50 只约 1 秒。
+
+**1v1 配置**（`matchups.py`）：`[[opponent_pool]]` 写 `rankings`、`kind`、`top`，可选 `name`、`ivs`；可以写几组，也可以和手写的 `[[opponent]]` 一起写（至少写一种）。手写对手的名字不能和环境前 N 里的重名；`--timeline` 也能用环境前 N 里的名字（几组环境前 N 都有、配置又不同时报错）。
+
+**报告**：手写的对手照旧（总表、每一对的九宫格）。每组环境前 N 一节：
+1. 来源说明，和建不了配置、跳过的几只；
+2. 对手表：名次、宝可梦、PvPoke 的综合分、CP、等级、IV、配招；
+3. 总表：每个测试对象在双方 0 盾、1 盾、2 盾时各赢了几只，九种盾数一共赢了几格，全部评分的平均；
+4. 每个测试对象一张表：一行是对一个对手的九宫格（列是"自己的盾数 对 对手的盾数"），赢的（评分大于 500）加粗，最后是九格里赢了几格和平均评分。
+
+`--csv` 另外把全部评分写成一场一行（`group, rank, subject, opponent, subject_shields, opponent_shields, rating`），方便另外分析。
+
+**例子**：`experiments/gl_mega_froslass_top.toml`，Mega 雪妖女（覆盖文件，未发布）两套快招，加普通雪妖女作对照，在 Mega 超级联盟对 Mega 前 10、非 Mega 前 50。3 个测试对象 × 60 个对手 × 9 场，约 2 秒。1 盾对 1 盾时，Powder Snow 的 Mega 雪妖女赢 Mega 前 10 里的 7 只、非 Mega 前 50 里的 30 只；普通雪妖女分别是 3 只、19 只。结果在 `docs/experiments/gl_mega_froslass_top.md`。
+
+**测试**：`tests/test_rankings.py`（快照的 SHA-256 和条目数、读排名、Mega / 非 Mega 分开取、六个文件的前 10 只都能建配置、两种 IV 规则、跟赛季规则走、跳过建不了的、写错的 `[[opponent_pool]]`），`tests/test_matchup_pools.py`（示例配置和示例报告的一行、每一格等于直接打九场、总表的计数、报告的各节、没有手写对手时的报告、CSV、`--timeline` 找对手、写错的配置）。

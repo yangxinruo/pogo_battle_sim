@@ -28,11 +28,23 @@
     [[opponent]]                                       # 对手，写法同上
     ...
 
+    [[opponent_pool]]                                  # 可选：PvPoke 排名里的环境前 N 当对手（rankings.py）
+    name = "非 Mega 前 50"                             # 可选：报告里的名字
+    rankings = "mega"                                  # PvPoke 的排名："all"（不含 Mega）/ "mega"（Mega 版）
+    kind = "non_mega"                                  # "mega" / "non_mega"：Mega 和非 Mega 分开取
+    top = 50                                           # 这一类的前几只
+    ivs = "rank1"                                      # 可选："rank1"（默认）/ "pvpoke_default"
+
+[[opponent]] 和 [[opponent_pool]] 至少写一种。环境前 N 的对手用宝可梦名当名字，不能和手写的对手重名。
+
 九宫格里的评分都是从测试对象一方看的 PvPoke 对战评分（battle.battle_rating），大于 500 算赢。
+手写的对手每一对列一个九宫格；环境前 N 每个测试对象列一张表，一行是一个对手的九宫格。
 
 一只宝可梦的写法、参数表的检查、报告里的一行说明和 3v3 配置（team_battle.py）共用，在 config.py。
 """
 
+import csv
+import io
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +69,7 @@ from pogo_sim.config import (  # 共用部分；REPO_ROOT、Entry、Participant 
     resolve_path,
 )
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
+from pogo_sim.rankings import Pool, PoolSpec, format_pool_members, format_skipped, parse_pool_spec, prepare_pool
 from pogo_sim.season import SEASON_PRESETS, SeasonRules, league_name
 from pogo_sim.simple_policy import SimplePolicy, SimplePolicyConfig
 from pogo_sim.team import Team
@@ -64,7 +77,9 @@ from pogo_sim.team import Team
 SHIELD_COUNTS: tuple[int, ...] = (0, 1, 2)
 WIN_RATING = 500  # 评分大于 500 算赢（一方倒下时，赢家的评分一定大于 500，见 battle.battle_rating）
 
-_TOP_LEVEL_KEYS = {"description", "custom_files", "league", "season", "policy", "subject", "opponent"}
+_TOP_LEVEL_KEYS = {
+    "description", "custom_files", "league", "season", "policy", "subject", "opponent", "opponent_pool",
+}
 _GROUP_NAMES = {"subject": "测试对象", "opponent": "对手"}
 
 
@@ -83,7 +98,8 @@ class MatchupConfig:
     season: SeasonRules
     policy: SimplePolicyConfig
     subjects: tuple[Entry, ...]
-    opponents: tuple[Entry, ...]
+    opponents: tuple[Entry, ...]  # 手写的对手，可以没有
+    opponent_pools: tuple[PoolSpec, ...] = ()  # 环境前 N，可以没有
 
 
 def load_matchup_config(path: Path | str) -> MatchupConfig:
@@ -93,9 +109,11 @@ def load_matchup_config(path: Path | str) -> MatchupConfig:
     where = path.name
 
     check_unknown_keys(raw, _TOP_LEVEL_KEYS, where)
-    for key in ("league", "season", "subject", "opponent"):
+    for key in ("league", "season", "subject"):
         if key not in raw:
             raise MatchupConfigError(f"{where}：缺少 {key}")
+    if "opponent" not in raw and "opponent_pool" not in raw:
+        raise MatchupConfigError(f"{where}：缺少对手（[[opponent]] 或 [[opponent_pool]]）")
 
     league = raw["league"]
     if not isinstance(league, int) or isinstance(league, bool) or league <= 0:
@@ -117,7 +135,8 @@ def load_matchup_config(path: Path | str) -> MatchupConfig:
         season=SEASON_PRESETS[season_key],
         policy=parse_params(SimplePolicyConfig, raw.get("policy", {}), where, "策略参数"),
         subjects=_parse_group(raw["subject"], f"{where}：subject"),
-        opponents=_parse_group(raw["opponent"], f"{where}：opponent"),
+        opponents=_parse_group(raw["opponent"], f"{where}：opponent") if "opponent" in raw else (),
+        opponent_pools=_parse_pools(raw["opponent_pool"], f"{where}：opponent_pool") if "opponent_pool" in raw else (),
     )
 
 
@@ -125,6 +144,17 @@ def _parse_group(raw: Any, where: str) -> tuple[Entry, ...]:
     if not isinstance(raw, list) or not raw:
         raise MatchupConfigError(f"{where}：至少要写一个（[[...]] 表）")
     return tuple(parse_entry(item, f"{where} 第 {i + 1} 项") for i, item in enumerate(raw))
+
+
+def _parse_pools(raw: Any, where: str) -> tuple[PoolSpec, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise MatchupConfigError(f"{where}：要写成 [[opponent_pool]] 表，至少一个")
+    pools = tuple(parse_pool_spec(item, f"{where} 第 {i + 1} 项") for i, item in enumerate(raw))
+    names = [pool.name for pool in pools]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise MatchupConfigError(f"{where}：name 重复：{', '.join(duplicates)}")
+    return pools
 
 
 # ---- 按赛季规则建配置 ----
@@ -137,17 +167,33 @@ class Matchups:
     config: MatchupConfig
     gm: GameMaster
     subjects: tuple[Participant, ...]
-    opponents: tuple[Participant, ...]
+    opponents: tuple[Participant, ...]  # 手写的对手
+    pools: tuple[Pool, ...] = ()  # 环境前 N
 
 
 def prepare_matchups(config: MatchupConfig) -> Matchups:
-    """加载覆盖文件，给每只宝可梦按赛季规则建配置，并检查招式。"""
+    """加载覆盖文件，给每只宝可梦按赛季规则建配置，并检查招式。环境前 N 里建不了配置的跳过（报告里写明）。"""
     gm = load_gamemaster(custom_files=config.custom_files)
+    subjects = _prepare_group(gm, config, config.subjects, "subject")
+    opponents = _prepare_group(gm, config, config.opponents, "opponent")
+    pools = []
+    for spec in config.opponent_pools:
+        try:
+            pool = prepare_pool(gm, spec, config.league, config.season)
+        except ValueError as e:
+            raise MatchupConfigError(f"环境前 N（{spec.name}）：{error_message(e)}") from e
+        clashes = sorted({p.label for p in opponents} & {p.label for p in pool.participants})
+        if clashes:
+            raise MatchupConfigError(
+                f"手写的对手和环境前 N（{spec.name}）里有重名的 {', '.join(clashes)}：给手写的那只写别的 label"
+            )
+        pools.append(pool)
     return Matchups(
         config=config,
         gm=gm,
-        subjects=_prepare_group(gm, config, config.subjects, "subject"),
-        opponents=_prepare_group(gm, config, config.opponents, "opponent"),
+        subjects=subjects,
+        opponents=opponents,
+        pools=tuple(pools),
     )
 
 
@@ -229,11 +275,34 @@ def shield_grid(matchups: Matchups, subject: Participant, opponent: Participant)
 
 
 def run_all(matchups: Matchups) -> list[ShieldGrid]:
-    """全部九宫格：先按测试对象，再按对手的顺序。"""
+    """手写对手的全部九宫格：先按测试对象，再按对手的顺序。"""
     return [
         shield_grid(matchups, subject, opponent)
         for subject in matchups.subjects
         for opponent in matchups.opponents
+    ]
+
+
+@dataclass(frozen=True)
+class PoolGrids:
+    """一组环境前 N 的全部九宫格。"""
+
+    pool: Pool
+    # by_subject[第几个测试对象][第几个对手]，对手按名次
+    by_subject: tuple[tuple[ShieldGrid, ...], ...]
+
+
+def run_pools(matchups: Matchups) -> list[PoolGrids]:
+    """每组环境前 N：每个测试对象对其中每一只打九宫格。"""
+    return [
+        PoolGrids(
+            pool,
+            tuple(
+                tuple(shield_grid(matchups, subject, opponent) for opponent in pool.participants)
+                for subject in matchups.subjects
+            ),
+        )
+        for pool in matchups.pools
     ]
 
 
@@ -242,6 +311,15 @@ def find_participant(group: Sequence[Participant], label: str) -> Participant:
         if participant.label == label:
             return participant
     raise KeyError(f"找不到 {label!r}（可用：{', '.join(p.label for p in group)}）")
+
+
+def find_opponent(matchups: Matchups, label: str) -> Participant:
+    """按名字找对手：手写的和环境前 N 里的都找。几组环境前 N 里都有、配置又不同时报错。"""
+    group = [*matchups.opponents, *(p for pool in matchups.pools for p in pool.participants)]
+    found = find_participant(group, label)
+    if any(p.label == label and p.build != found.build for p in group):
+        raise KeyError(f"{label!r} 在几组环境前 N 里都有，配置不同（排名或 IV 规则不同），分不清是哪一只")
+    return found
 
 
 # ---- 报告（Markdown） ----
@@ -271,8 +349,81 @@ def format_grid(grid: ShieldGrid) -> str:
     return format_table(header, rows)
 
 
-def format_report(matchups: Matchups, grids: Sequence[ShieldGrid], source: str = "") -> str:
-    """完整报告：设置、双方配置、总表、每一对的九宫格。"""
+def _shield_header(mine: int, theirs: int) -> str:
+    return f"{mine} 对 {theirs}"
+
+
+def _rating_cell(rating: int) -> str:
+    """赢的加粗。"""
+    return f"**{rating}**" if rating > WIN_RATING else str(rating)
+
+
+def format_pool_summary(matchups: Matchups, pool_grids: PoolGrids) -> str:
+    """环境前 N 的总表：行是测试对象；双方同样盾数时赢了几只，九种盾数一共赢了几格，平均评分。"""
+    header = ["测试对象", *(f"{s} 对 {s} 盾" for s in SHIELD_COUNTS), "九种盾数", "平均评分"]
+    rows = []
+    for subject, grids in zip(matchups.subjects, pool_grids.by_subject):
+        n = len(grids)
+        same = [f"赢 {sum(1 for g in grids if g.ratings[s][s] > WIN_RATING)} / {n}" for s in SHIELD_COUNTS]
+        total_wins = sum(g.wins for g in grids)
+        average = sum(g.average for g in grids) / n if n else 0.0
+        rows.append([marked(subject), *same, f"赢 {total_wins} / {9 * n}", f"{average:.0f}"])
+    return format_table(header, rows)
+
+
+def format_pool_table(pool_grids: PoolGrids, subject_index: int) -> str:
+    """一个测试对象对环境前 N：一行是一个对手的九宫格（列是"自己的盾数 对 对手的盾数"），赢的加粗。"""
+    header = [
+        "名次",
+        "对手",
+        *(_shield_header(mine, theirs) for mine in SHIELD_COUNTS for theirs in SHIELD_COUNTS),
+        "赢",
+        "平均",
+    ]
+    rows = []
+    for member, grid in zip(pool_grids.pool.members, pool_grids.by_subject[subject_index]):
+        rows.append([
+            str(member.ranked.rank),
+            marked(member.participant),
+            *(_rating_cell(r) for r in grid.all_ratings()),
+            f"{grid.wins}/9",
+            f"{grid.average:.0f}",
+        ])
+    return format_table(header, rows)
+
+
+def _format_pool_section(matchups: Matchups, pool_grids: PoolGrids) -> list[str]:
+    pool = pool_grids.pool
+    lines = [f"## 环境前 N：{pool.spec.name}", ""]
+    lines.append(
+        f"{pool.spec.describe(pool.league)}。名次是 PvPoke 排名文件里的名次"
+        f"（{pool.spec.rankings} 排名里的所有宝可梦一起排），推荐配招也来自 PvPoke。"
+    )
+    if pool.skipped:
+        lines += ["", f"前 {pool.spec.top} 只里建不了配置、跳过的："]
+        lines += format_skipped(pool.skipped)
+    lines += ["", "### 对手", "", format_pool_members(matchups.gm, pool), ""]
+    lines += ["### 总表", ""]
+    lines.append(
+        f"双方同样盾数时赢了几只（评分大于 {WIN_RATING}）；九种盾数（0–2 盾对 0–2 盾）一共赢了几格；全部评分的平均。"
+    )
+    lines += ["", format_pool_summary(matchups, pool_grids), ""]
+    for i, subject in enumerate(matchups.subjects):
+        lines += [f"### {marked(subject)}", ""]
+        lines.append(
+            f"一行是对一个对手的九宫格，列名是\"自己的盾数 对 对手的盾数\"；加粗的是赢的（评分大于 {WIN_RATING}）。"
+        )
+        lines += ["", format_pool_table(pool_grids, i), ""]
+    return lines
+
+
+def format_report(
+    matchups: Matchups,
+    grids: Sequence[ShieldGrid],
+    source: str = "",
+    pool_grids: Sequence[PoolGrids] = (),
+) -> str:
+    """完整报告：设置、双方配置、手写对手的总表和九宫格、每组环境前 N 的表。"""
     config = matchups.config
     lines = []
     if config.description:
@@ -289,13 +440,42 @@ def format_report(matchups: Matchups, grids: Sequence[ShieldGrid], source: str =
         lines.append(f"- 覆盖文件：{log}")
     lines += ["", "测试对象：", ""]
     lines += [f"- {format_participant(matchups.gm, p)}" for p in matchups.subjects]
-    lines += ["", "对手：", ""]
-    lines += [f"- {format_participant(matchups.gm, p)}" for p in matchups.opponents]
+    if matchups.opponents:
+        lines += ["", "对手：", ""]
+        lines += [f"- {format_participant(matchups.gm, p)}" for p in matchups.opponents]
+    if matchups.pools:
+        lines += ["", "环境前 N（每组的对手列在各自的一节里）：", ""]
+        lines += [f"- {pool.spec.name}：{pool.spec.describe(pool.league)}" for pool in matchups.pools]
     if any(p.outside_movepool for p in (*matchups.subjects, *matchups.opponents)):
         lines += ["", "\\* 带了招式池外的招式（假设）。"]
-    lines += ["", "## 总表", "", "每格是 0–2 盾对 0–2 盾九场里赢了几场，以及九场的平均评分。", ""]
-    lines.append(format_summary(matchups, grids))
-    lines += ["", "## 九宫格", ""]
-    for grid in grids:
-        lines += [format_grid(grid), ""]
+    if matchups.opponents:
+        lines += ["", "## 总表", "", "每格是 0–2 盾对 0–2 盾九场里赢了几场，以及九场的平均评分。", ""]
+        lines.append(format_summary(matchups, grids))
+        lines += ["", "## 九宫格", ""]
+        for grid in grids:
+            lines += [format_grid(grid), ""]
+    if pool_grids:
+        lines.append("")
+    for pg in pool_grids:
+        lines += _format_pool_section(matchups, pg)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def format_csv(matchups: Matchups, grids: Sequence[ShieldGrid], pool_grids: Sequence[PoolGrids] = ()) -> str:
+    """全部评分，一场一行（CSV，方便另外分析）。group 是"手写"或环境前 N 的名字；rank 只有环境前 N 有。"""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(["group", "rank", "subject", "opponent", "subject_shields", "opponent_shields", "rating"])
+
+    def write(group: str, rank: str, grid: ShieldGrid) -> None:
+        for mine in SHIELD_COUNTS:
+            for theirs in SHIELD_COUNTS:
+                writer.writerow([group, rank, grid.subject, grid.opponent, mine, theirs, grid.ratings[mine][theirs]])
+
+    for grid in grids:
+        write("手写", "", grid)
+    for pg in pool_grids:
+        for subject_grids in pg.by_subject:
+            for member, grid in zip(pg.pool.members, subject_grids):
+                write(pg.pool.spec.name, str(member.ranked.rank), grid)
+    return out.getvalue()

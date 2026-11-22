@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）、3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）和 3v3-e（3v3 配置文件与报告，含队伍检查）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）、3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）、3v3-e（3v3 配置文件与报告，含队伍检查）和 3v3-f1（PvPoke 排名快照；1v1 对环境前 N 的批量九宫格，Mega 和非 Mega 分开取）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -28,15 +28,16 @@
   - `report.py`：对战报告的文字部分（双方配置和配置说明、结果一行；1v1 和 3v3 都可以）
   - `moveset.py`：配招和招式池检查
   - `config.py`：配置文件的共用部分（一只宝可梦的写法、参数表的检查、报告里的一行说明）
-  - `matchups.py`：1v1 对战配置文件（TOML）和 0–2 盾对 0–2 盾的九宫格
+  - `matchups.py`：1v1 对战配置文件（TOML）和 0–2 盾对 0–2 盾的九宫格；对手可以是环境前 N
+  - `rankings.py`：读 PvPoke 的排名，取环境前 N（Mega 和非 Mega 分开取）
   - `team_battle.py`：3v3 配置文件（TOML）和报告
 - `tests/`：pytest 测试；`tests/fixtures/` 是用 PvPoke 源码生成的参考数据
 - `tools/pvpoke_ref/`：在 Node 里运行 PvPoke 源码、生成参考数据的脚本
 - `tools/compare_simple_policy.py`：简单规则策略与 PvPoke AI 的比较（`.venv/bin/python -m tools.compare_simple_policy`）
-- `tools/run_matchups.py`：按对战配置文件跑九宫格（`.venv/bin/python -m tools.run_matchups <配置文件>`）
+- `tools/run_matchups.py`：按对战配置文件跑九宫格（`.venv/bin/python -m tools.run_matchups <配置文件>`，`--csv` 另存全部评分）
 - `tools/run_team_battle.py`：按 3v3 配置文件打一场、出报告（`.venv/bin/python -m tools.run_team_battle <配置文件>`）
-- `experiments/`：对战配置文件，例如 Mega 基格尔德在大师联盟（`mega_zygarde_ml.toml`）、3v3 的例子（`gl_3v3_example.toml`）；结果在 `docs/experiments/`
-- `data/`：PvPoke gamemaster.json 快照（来源见 `data/SOURCE.md`）
+- `experiments/`：对战配置文件，例如 Mega 基格尔德在大师联盟（`mega_zygarde_ml.toml`）、Mega 雪妖女对环境前 N（`gl_mega_froslass_top.toml`）、3v3 的例子（`gl_3v3_example.toml`）；结果在 `docs/experiments/`
+- `data/`：PvPoke gamemaster.json 和排名（`rankings/`）的快照（来源见 `data/SOURCE.md`）
 - `data/custom/`：自定义覆盖文件（TOML），格式见 docs/mechanics.md 第 10 节
 - `docs/`：机制规格文档
 
@@ -236,6 +237,32 @@ outside_movepool = true                            # GO 里超梦不会 Avalanch
 
 完整格式（IV、等级、挚友、策略参数等）见 `pogo_sim/matchups.py` 开头，例子见 [experiments/mega_zygarde_ml.toml](experiments/mega_zygarde_ml.toml)，结果见 [docs/experiments/mega_zygarde_ml.md](docs/experiments/mega_zygarde_ml.md)。评分的含义见 [docs/mechanics.md](docs/mechanics.md) 6.5 节。
 
+### 对环境前 N
+
+对手也可以直接取 PvPoke 排名里的前 N 只（排名快照在 `data/rankings/`），配招用 PvPoke 的推荐。有 Mega 的规则下 Mega 和非 Mega 分开取：
+
+```toml
+[[opponent_pool]]
+name = "Mega 前 10"
+rankings = "mega"        # PvPoke 的排名："all"（普通联盟，不含 Mega）/ "mega"（Mega 版）
+kind = "mega"            # "mega" / "non_mega"
+top = 10
+# ivs = "pvpoke_default" 默认是 IV 排名第 1（和不写 IV 的配置一样）；改成 PvPoke 默认 IV 方便对照 PvPoke
+
+[[opponent_pool]]
+name = "非 Mega 前 50"
+rankings = "mega"
+kind = "non_mega"
+top = 50
+```
+
+```bash
+.venv/bin/python -m tools.run_matchups experiments/gl_mega_froslass_top.toml --output docs/experiments/gl_mega_froslass_top.md
+.venv/bin/python -m tools.run_matchups experiments/gl_mega_froslass_top.toml --timeline "Mega Froslass (Powder Snow)" "Sableye (Mega)" 1 1
+```
+
+报告（[docs/experiments/gl_mega_froslass_top.md](docs/experiments/gl_mega_froslass_top.md)）里每组环境前 N 一节：对手的名次、CP、等级、IV、配招；每个测试对象赢了几只（双方 0、1、2 盾）、九种盾数一共赢了几格、平均评分；再按对手一行列出九宫格，赢的加粗。`--csv` 把全部评分另存成一场一行的 CSV。
+
 ## 未发布 Mega 的 1v1（完整流程）
 
 覆盖文件 → 按赛季规则建配置 → 简单规则策略对战 → 报告：
@@ -318,4 +345,4 @@ PvPoke 源码不入本仓库。
 
 ## 数据来源
 
-宝可梦和技能数据来自 [PvPoke](https://github.com/pvpoke/pvpoke)（MIT license），详见 `data/SOURCE.md`。
+宝可梦和技能数据、排名来自 [PvPoke](https://github.com/pvpoke/pvpoke)（MIT license），详见 `data/SOURCE.md`。
