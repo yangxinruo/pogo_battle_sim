@@ -1,6 +1,7 @@
 """3v3 对战配置与报告（3v3-e）：两队写在一个 TOML 文件里，打一场，输出 Markdown 报告。
 
 用 tools/run_team_battle.py 运行。例子：experiments/gl_3v3_example.toml。
+队伍对队伍（team_matrix.py）也用这里的配置解析（parse_common_settings、parse_team）和建队伍（prepare_team、assemble_team_battle）。
 
 文件格式：
     description = "说明"                    # 可选
@@ -63,6 +64,7 @@ from pogo_sim.evaluation import MatchupEvaluator
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
 from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
 from pogo_sim.season import SEASON_PRESETS, SeasonRules, check_team, league_name
+from pogo_sim.simple_policy import SimplePolicyConfig
 from pogo_sim.team import Team
 from pogo_sim.team_policy import TeamPolicy, TeamPolicyConfig
 from pogo_sim.timeline import DecisionEvent, FaintEvent, MoveEvent, SwitchEvent, format_timeline
@@ -96,6 +98,18 @@ class TeamBattleConfig:
     teams: tuple[TeamSetup, TeamSetup]
 
 
+@dataclass(frozen=True)
+class CommonSettings:
+    """3v3 配置和队伍对队伍配置（team_matrix.py）共用的部分。"""
+
+    description: str
+    custom_files: tuple[Path, ...]
+    league: int
+    season: SeasonRules
+    rules: BattleRules
+    shared_policy: dict[str, Any]  # 配置里的 [policy] 原样（已检查过）；各队再用自己的 policy 逐项覆盖
+
+
 def load_team_battle_config(path: Path | str) -> TeamBattleConfig:
     """读取并检查 3v3 配置文件（格式见模块说明）。写错时抛出 ConfigError。"""
     path = Path(path)
@@ -104,6 +118,34 @@ def load_team_battle_config(path: Path | str) -> TeamBattleConfig:
 
     check_unknown_keys(raw, _TOP_LEVEL_KEYS, where)
     for key in ("league", "season", "team"):
+        if key not in raw:
+            raise ConfigError(f"{where}：缺少 {key}")
+    settings = parse_common_settings(raw, where)
+
+    teams = raw["team"]
+    if not isinstance(teams, list) or len(teams) != 2:
+        count = len(teams) if isinstance(teams, list) else "不是 [[team]] 表"
+        raise ConfigError(f"{where}：要正好写两队（[[team]]），得到 {count}")
+    parsed = tuple(
+        parse_team(team, settings.shared_policy, settings.rules, f"{where}：第 {i + 1} 队")
+        for i, team in enumerate(teams)
+    )
+    if parsed[0].name == parsed[1].name:
+        raise ConfigError(f"{where}：两队不能同名（{parsed[0].name}）")
+
+    return TeamBattleConfig(
+        description=settings.description,
+        custom_files=settings.custom_files,
+        league=settings.league,
+        season=settings.season,
+        rules=settings.rules,
+        teams=(parsed[0], parsed[1]),
+    )
+
+
+def parse_common_settings(raw: dict[str, Any], where: str) -> CommonSettings:
+    """description、custom_files、league、season、[rules]、[policy]。写错时抛出 ConfigError。"""
+    for key in ("league", "season"):
         if key not in raw:
             raise ConfigError(f"{where}：缺少 {key}")
 
@@ -121,29 +163,22 @@ def load_team_battle_config(path: Path | str) -> TeamBattleConfig:
     shared_policy = raw.get("policy", {})
     parse_params(TeamPolicyConfig, shared_policy, where, "策略参数")  # 先单独检查一遍，报错时好找
 
-    teams = raw["team"]
-    if not isinstance(teams, list) or len(teams) != 2:
-        count = len(teams) if isinstance(teams, list) else "不是 [[team]] 表"
-        raise ConfigError(f"{where}：要正好写两队（[[team]]），得到 {count}")
-    parsed = tuple(
-        _parse_team(team, shared_policy, rules, f"{where}：第 {i + 1} 队") for i, team in enumerate(teams)
-    )
-    if parsed[0].name == parsed[1].name:
-        raise ConfigError(f"{where}：两队不能同名（{parsed[0].name}）")
-
-    return TeamBattleConfig(
+    return CommonSettings(
         description=str(raw.get("description", "")),
         custom_files=tuple(resolve_path(p) for p in custom_files),
         league=league,
         season=SEASON_PRESETS[season_key],
         rules=rules,
-        teams=(parsed[0], parsed[1]),
+        shared_policy=shared_policy,
     )
 
 
-def _parse_team(raw: Any, shared_policy: dict[str, Any], rules: BattleRules, where: str) -> TeamSetup:
+def parse_team(
+    raw: Any, shared_policy: dict[str, Any], rules: BattleRules, where: str, table: str = "team"
+) -> TeamSetup:
+    """配置里的一队。table 是报错信息里的表名（[[team]]、[[opponent_team]] 等）。"""
     if not isinstance(raw, dict):
-        raise ConfigError(f"{where}：要写成 [[team]] 表")
+        raise ConfigError(f"{where}：要写成 [[{table}]] 表")
     if "name" not in raw:
         raise ConfigError(f"{where}：缺少 name")
     name = raw["name"]
@@ -152,7 +187,7 @@ def _parse_team(raw: Any, shared_policy: dict[str, Any], rules: BattleRules, whe
     where = f"{where}（{name}）"
     check_unknown_keys(raw, _TEAM_KEYS, where)
     if "member" not in raw:
-        raise ConfigError(f"{where}：缺少 member（[[team.member]]）")
+        raise ConfigError(f"{where}：缺少 member（[[{table}.member]]）")
 
     shields = raw.get("shields", rules.max_shields)
     if not isinstance(shields, int) or isinstance(shields, bool) or not 0 <= shields <= rules.max_shields:
@@ -160,14 +195,14 @@ def _parse_team(raw: Any, shared_policy: dict[str, Any], rules: BattleRules, whe
 
     team_policy = raw.get("policy", {})
     if not isinstance(team_policy, dict):
-        raise ConfigError(f"{where}：policy 要写成表（[team.policy]）")
+        raise ConfigError(f"{where}：policy 要写成表（[{table}.policy]）")
     policy = parse_params(TeamPolicyConfig, merge_tables(shared_policy, team_policy), where, "策略参数")
 
     members = raw["member"]
     size = rules.max_team_size
     if not isinstance(members, list) or len(members) != size:
-        count = len(members) if isinstance(members, list) else "不是 [[team.member]] 表"
-        raise ConfigError(f"{where}：每队要正好 {size} 只（[[team.member]]），得到 {count}")
+        count = len(members) if isinstance(members, list) else f"不是 [[{table}.member]] 表"
+        raise ConfigError(f"{where}：每队要正好 {size} 只（[[{table}.member]]），得到 {count}")
     entries = tuple(parse_entry(member, f"{where}第 {i + 1} 只") for i, member in enumerate(members))
     return TeamSetup(name, shields, policy, entries)
 
@@ -195,39 +230,52 @@ class TeamBattle:
 def prepare_team_battle(config: TeamBattleConfig) -> TeamBattle:
     """加载覆盖文件，给每只宝可梦按赛季规则建配置，检查招式和队伍。写错时抛出 ConfigError。"""
     gm = load_gamemaster(custom_files=config.custom_files)
-    prepared = [_prepare_team(gm, config, setup) for setup in config.teams]
+    prepared = [prepare_team(gm, setup, config.league, config.season) for setup in config.teams]
+    return assemble_team_battle(config, gm, (prepared[0], prepared[1]))
 
+
+def assemble_team_battle(
+    config: TeamBattleConfig,
+    gm: GameMaster,
+    members: tuple[tuple[Participant, ...], tuple[Participant, ...]],
+) -> TeamBattle:
+    """用建好的两队配置（prepare_team 的结果）拼成一场。批量对战时每队只建一次配置（team_matrix.py）。"""
     # 两队都有的名字（例如镜像对局），后面加队名，免得时间线里分不清
-    labels = [[p.label for p in team] for team in prepared]
-    shared = set(labels[0]) & set(labels[1])
+    shared = {p.label for p in members[0]} & {p.label for p in members[1]}
     teams = tuple(
         PreparedTeam(
             setup,
-            members,
-            tuple(f"{p.label} ({setup.name})" if p.label in shared else p.label for p in members),
+            team,
+            tuple(f"{p.label} ({setup.name})" if p.label in shared else p.label for p in team),
         )
-        for setup, members in zip(config.teams, prepared)
+        for setup, team in zip(config.teams, members)
     )
     return TeamBattle(config, gm, (teams[0], teams[1]))
 
 
-def _prepare_team(gm: GameMaster, config: TeamBattleConfig, setup: TeamSetup) -> tuple[Participant, ...]:
+def prepare_team(gm: GameMaster, setup: TeamSetup, league: int, season: SeasonRules) -> tuple[Participant, ...]:
+    """一队按赛季规则建配置，检查招式和队伍规则。写错时抛出 ConfigError。"""
     members = []
     for i, entry in enumerate(setup.members):
         where = f"{setup.name} 第 {i + 1} 只（{entry.label or entry.species_id}）"
         try:
-            members.append(prepare_entry(gm, entry, config.league, config.season))
+            members.append(prepare_entry(gm, entry, league, season))
         except (KeyError, ValueError) as e:
             raise ConfigError(f"{where}：{error_message(e)}") from e
+    check_prepared_team(gm, setup.name, members, season)
+    return tuple(members)
+
+
+def check_prepared_team(gm: GameMaster, name: str, members: Sequence[Participant], season: SeasonRules) -> None:
+    """队伍规则（season.check_team：同一种不能带两只、Mega 数）和名字不重复。不符合时抛出 ConfigError。"""
     try:
-        check_team(gm, [p.build for p in members], config.season)
+        check_team(gm, [p.build for p in members], season)
     except ValueError as e:
-        raise ConfigError(f"{setup.name}：{e}") from e
+        raise ConfigError(f"{name}：{e}") from e
     labels = [p.label for p in members]
     duplicates = sorted({label for label in labels if labels.count(label) > 1})
     if duplicates:
-        raise ConfigError(f"{setup.name} 里有重名的 {', '.join(duplicates)}：给它们写不同的 label")
-    return tuple(members)
+        raise ConfigError(f"{name} 里有重名的 {', '.join(duplicates)}：给它们写不同的 label")
 
 
 # ---- 对战 ----
@@ -245,17 +293,29 @@ def make_teams(battle: TeamBattle) -> tuple[Team, Team]:
     return teams[0], teams[1]
 
 
-def make_policies(battle: TeamBattle) -> tuple[TeamPolicy, TeamPolicy]:
-    """双方的 TeamPolicy。对位评估的配置相同时共用一个评估器（共用缓存，结果不变，只是快）。"""
-    configs = [team.setup.policy for team in battle.teams]
-    first = TeamPolicy(configs[0])
-    if configs[1].evaluation == configs[0].evaluation:
-        return first, TeamPolicy(configs[1], first.evaluator)
-    return first, TeamPolicy(configs[1])
+def make_policies(
+    battle: TeamBattle, evaluators: dict[SimplePolicyConfig, MatchupEvaluator] | None = None
+) -> tuple[TeamPolicy, TeamPolicy]:
+    """双方的 TeamPolicy。对位评估的配置相同时共用一个评估器（共用缓存，结果不变，只是快）。
+
+    evaluators：按对位评估配置存的评估器，传进来就在多场对战之间共用（team_matrix.py）。
+    评估器的缓存键是双方的状态、盾数和规则，不含是哪一场，所以共用不改变结果。
+    """
+    if evaluators is None:
+        evaluators = {}
+    policies = []
+    for team in battle.teams:
+        config = team.setup.policy
+        if config.evaluation not in evaluators:
+            evaluators[config.evaluation] = MatchupEvaluator(config.evaluation)
+        policies.append(TeamPolicy(config, evaluators[config.evaluation]))
+    return policies[0], policies[1]
 
 
-def run_team_battle(battle: TeamBattle) -> BattleResult:
-    return Battle(make_teams(battle), make_policies(battle), battle.config.rules).run()
+def run_team_battle(
+    battle: TeamBattle, evaluators: dict[SimplePolicyConfig, MatchupEvaluator] | None = None
+) -> BattleResult:
+    return Battle(make_teams(battle), make_policies(battle, evaluators), battle.config.rules).run()
 
 
 def timeline_names(battle: TeamBattle) -> tuple[tuple[str, ...], tuple[str, ...]]:

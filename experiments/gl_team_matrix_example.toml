@@ -1,0 +1,85 @@
+# 队伍对队伍的例子：README 里的 Team A，和把 Registeel 换成 Mega 雪妖女（未发布，自定义数据）的同一队，
+# 在 Mega 超级联盟对手写的 Team B 和从环境前 N 随机抽的 50 队各打一场 3v3。格式见 pogo_sim/team_matrix.py 开头。运行：
+#   .venv/bin/python -m tools.run_team_matrix experiments/gl_team_matrix_example.toml
+#
+# 随机抽的对手来自 PvPoke 的 Mega 版超级联盟排名（data/rankings/mega/overall/rankings-1500.json，commit d02018e）：
+# 每队 1 只 Mega（Mega 前 10 里抽）+ 2 只非 Mega（非 Mega 前 30 里抽），配招用 PvPoke 的推荐。
+# 所有队伍都不写 IV：按赛季规则取 IV 排名第 1 和合法的最高等级。
+
+description = "队伍对队伍例子：Team A 和换上 Mega 雪妖女的 Team A，在 Mega 超级联盟对手写的 Team B 和随机抽的 50 队。"
+custom_files = ["data/custom/mega_froslass.toml"]
+league = 1500
+season = "pvpoke"
+
+# 不写 [rules]：机制与 PvPoke 一致。不写 [policy]：所有队伍都用 TeamPolicy 的默认参数。
+
+
+# ---- 我方 ----
+
+[[team]]
+name = "Team A"
+
+[[team.member]]
+species = "azumarill"
+fast = "BUBBLE"
+charged = ["ICE_BEAM", "PLAY_ROUGH"]
+
+[[team.member]]
+species = "medicham"
+fast = "COUNTER"
+charged = ["ICE_PUNCH", "PSYCHIC"]
+
+[[team.member]]
+species = "registeel"
+fast = "LOCK_ON"
+charged = ["FOCUS_BLAST", "ZAP_CANNON"]
+
+
+[[team]]
+name = "Team A (Mega Froslass)"  # 同一队，Registeel 换成 Mega 雪妖女
+
+[[team.member]]
+species = "azumarill"
+fast = "BUBBLE"
+charged = ["ICE_BEAM", "PLAY_ROUGH"]
+
+[[team.member]]
+species = "medicham"
+fast = "COUNTER"
+charged = ["ICE_PUNCH", "PSYCHIC"]
+
+[[team.member]]
+species = "froslass_mega"
+fast = "POWDER_SNOW"
+charged = ["AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"]
+
+
+# ---- 对手：手写 ----
+
+[[opponent_team]]
+name = "Team B"
+
+[[opponent_team.member]]
+species = "swampert"
+fast = "MUD_SHOT"
+charged = ["HYDRO_CANNON", "EARTHQUAKE"]
+
+[[opponent_team.member]]
+species = "altaria"
+fast = "DRAGON_BREATH"
+charged = ["SKY_ATTACK", "MOONBLAST"]
+
+[[opponent_team.member]]
+species = "trevenant"
+fast = "SHADOW_CLAW"
+charged = ["SEED_BOMB", "SHADOW_BALL"]
+
+
+# ---- 对手：随机抽 ----
+
+[opponent_sample]
+rankings = "mega"
+top = 30       # 非 Mega 前 30
+mega_top = 10  # 每队 1 只 Mega，Mega 前 10 里抽
+count = 50
+seed = 1

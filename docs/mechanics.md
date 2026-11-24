@@ -768,7 +768,7 @@ PvPoke 还有一条：当前招式里有 RETURN（报恩）时下限是 2（净�
 | 3v3-d3 | 全队一起考虑的开盾（不在必输的对位上开盾）；3v3 里的骗盾（不另加规则） | 完成 |
 | 3v3-e | 3v3 配置文件与报告；队伍检查（只数、同一种不能带两只、Mega 数） | 完成 |
 | 3v3-f1 | PvPoke 排名快照；1v1 对环境前 N（Mega / 非 Mega 分开）的批量九宫格 | 完成 |
-| 3v3-f2 | 队伍对队伍：我方的队伍对手写的和随机抽的很多队打 3v3 | |
+| 3v3-f2 | 队伍对队伍：我方的队伍对手写的和随机抽的很多队打 3v3 | 完成 |
 | 3v3-g | 对固定对手策略的最优应对（搜索） | |
 
 ### 13.4 队伍结构（3v3-a）
@@ -951,3 +951,47 @@ PvPoke 没有可复现的 3v3（13.1），所以对照的是：给定同一个�
 **例子**：`experiments/gl_mega_froslass_top.toml`，Mega 雪妖女（覆盖文件，未发布）两套快招，加普通雪妖女作对照，在 Mega 超级联盟对 Mega 前 10、非 Mega 前 50。3 个测试对象 × 60 个对手 × 9 场，约 2 秒。1 盾对 1 盾时，Powder Snow 的 Mega 雪妖女赢 Mega 前 10 里的 7 只、非 Mega 前 50 里的 30 只；普通雪妖女分别是 3 只、19 只。结果在 `docs/experiments/gl_mega_froslass_top.md`。
 
 **测试**：`tests/test_rankings.py`（快照的 SHA-256 和条目数、读排名、Mega / 非 Mega 分开取、六个文件的前 10 只都能建配置、两种 IV 规则、跟赛季规则走、跳过建不了的、写错的 `[[opponent_pool]]`），`tests/test_matchup_pools.py`（示例配置和示例报告的一行、每一格等于直接打九场、总表的计数、报告的各节、没有手写对手时的报告、CSV、`--timeline` 找对手、写错的配置）。
+
+### 13.10 队伍对队伍（3v3-f2）
+`pogo_sim/team_matrix.py`，格式写在模块开头，例子 `experiments/gl_team_matrix_example.toml`，用 `tools/run_team_matrix.py` 运行，报告写进 `docs/experiments/`。
+
+**配置**（TOML）：
+- 和 3v3 配置（13.8）相同的部分：覆盖文件、联盟、赛季规则、`[rules]`、`[policy]`（所有队伍共用，各队再逐项覆盖）。
+- `[[team]]`：我方队伍，一队或几队，写法同 3v3 配置的 `[[team]]`（`name`、可选 `shields`、`[team.policy]`、`[[team.member]]`）。
+- `[[opponent_team]]`：手写的对手队伍，写法相同。
+- `[opponent_sample]`：从环境前 N 随机抽对手队伍。`rankings`（哪套排名）、`top`（非 Mega 候选：这一类的前 top 只）、`count`、`seed` 必写；可选 `mega_top`（默认 0）、`ivs`（同 13.9）、`shields`、`[opponent_sample.policy]`。
+- 手写和抽样至少写一种。所有队伍的名字都不能重复；抽样的队伍叫"抽样 1"……"抽样 N"。
+
+**抽样**（D5，用户 2026-11-21）：
+- 候选就是 13.9 的环境前 N：Mega 和非 Mega 分开取，建不了配置的跳过，报告里写明。
+- 每一队：`mega_top` 大于 0 时，先从 Mega 候选里均匀抽 1 只，所以每队正好 1 只 Mega；`mega_top = 0` 时不带 Mega。再把非 Mega 候选洗牌，按顺序取，跳过和已选的同一种的（按图鉴编号，D6），取满一队。最后把这一队的出场顺序洗牌，Mega 可能是首发，也可能是后备。
+- 均匀抽，不按名次加权。成员相同（不论顺序）的队伍只留一个，重抽；试了 `count` × 50 次还抽不够时报错（候选太少）。
+- 可复现：随机数只用 `random.Random(seed).random()`，Python 只保证它在不同版本下对同一个种子给出同样的序列（`randrange`、`shuffle` 不保证）。抽样一队一队进行，`count` 调大时前面的队伍不变。
+- 抽到的队伍也过一遍队伍检查（13.8）。
+
+**对战**：我方每一队对每一队对手打一场 3v3，我方是第 0 方，双方都用 `TeamPolicy`。每队只建一次配置。对位评估器按评估配置在全部对战之间共用（`MatchupEvaluator` 的缓存键是双方的状态、盾数和规则，不含是哪一场），只是快，结果和每一场单独打相同（测试里核对）。对战是确定的：同一个配置每次结果相同。
+
+**报告**（Markdown），按顺序：
+1. 设置：配置文件、联盟和赛季规则、和 PvPoke 默认不同的机制规则、覆盖文件、对战的组织方式、策略和评分口径。
+2. 我方队伍：每只一行（CP、等级、IV、配招），策略参数（和默认不同的）。
+3. 总表：我方每一队对手写的、抽样的、全部对手，各几场、赢平输、我方的平均评分、平均剩余只数。
+4. 我方每一队一张表，一场一行：对手队伍、对手成员（按出场顺序，抽样的带排名名次）、结果（时间到另注）、评分、剩余只数、剩余盾、回合数。赢的加粗。
+5. 对手队伍：手写的配置；抽样的说明、跳过的候选、每一队的成员、候选表（名次、PvPoke 综合分、CP、等级、IV、配招）。
+
+`--csv` 另外把全部对战写成一场一行（`team, opponent_group, opponent, opponent_members, result, timed_out, team_rating, opponent_rating, team_remaining, opponent_remaining, team_shields_left, opponent_shields_left, turns`）。`--battle 我方队伍 对手队伍` 只打这一场，输出 13.8 的完整 3v3 报告（换人和开盾的原因、时间线）。
+
+**例子**：`experiments/gl_team_matrix_example.toml`，README 里的 Team A，和把 Registeel 换成 Mega 雪妖女（覆盖文件，未发布）的同一队，在 Mega 超级联盟对手写的 Team B 和随机抽的 50 队（每队 1 只 Mega 前 10 + 2 只非 Mega 前 30，种子 1）。共 102 场，约 4.5 秒。
+
+| 我方 | 对 Team B | 对抽样 50 队 | 平均评分（全部 51 场） |
+|---|---|---|---|
+| Team A | 输（221） | 赢 13 | 452 |
+| Team A (Mega Froslass) | 赢（566） | 赢 23 | 510 |
+
+抽样是均匀的，Mega 前 10 被抽到的次数不平均（这 50 队里 Mega 勾魂眼只出现 2 次，Mega 七夕青鸟 10 次）。结果在 `docs/experiments/gl_team_matrix_example.md`。
+
+**顺带的改动**（`team_battle.py`，3v3 的行为和报告不变，`docs/experiments/gl_3v3_example.md` 重新生成后逐字相同）：
+- 配置的共用部分拆成 `parse_common_settings`；`parse_team` 公开，报错信息里的表名可以指定（`[[opponent_team.member]]` 等）。
+- 建一队拆成 `prepare_team` 和 `check_prepared_team`，两队拼成一场是 `assemble_team_battle`（两队都有的名字后面加队名）。
+- `make_policies`、`run_team_battle` 可以传入共用的评估器。
+
+**测试**：`tests/test_team_matrix.py`（示例配置、抽到的前 3 队和对它们的结果、每一场和单独打一场相同、跨场共用评估器、镜像的名字、抽样可复现、抽样规则（每队 1 只 Mega、同一种不重复、组合不重复、Mega 在三个位置都出现过）、不带 Mega、候选不够时报错、总表计数、报告各节、示例报告是最新的、没有手写对手时的报告、CSV、`--battle` 找队伍、写错的配置十多种、抽样队伍的策略参数覆盖）。
