@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成，正在做第 3 步（3v3），拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节；目前完成了 3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）、3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）、3v3-e（3v3 配置文件与报告，含队伍检查）、3v3-f1（PvPoke 排名快照；1v1 对环境前 N 的批量九宫格，Mega 和非 Mega 分开取）和 3v3-f2（队伍对队伍：我方的队伍对手写的和从环境前 N 随机抽的很多队各打一场 3v3）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成。第 3 步（3v3）拆成的几个单元都已完成，拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节：3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）、3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）、3v3-e（3v3 配置文件与报告，含队伍检查）、3v3-f1（PvPoke 排名快照；1v1 对环境前 N 的批量九宫格，Mega 和非 Mega 分开取）、3v3-f2（队伍对队伍：我方的队伍对手写的和从环境前 N 随机抽的很多队各打一场 3v3）和 3v3-g（对固定对手策略的应对：对手的 TeamPolicy 不变，逐步试探我方更好的打法）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -32,12 +32,13 @@
   - `rankings.py`：读 PvPoke 的排名，取环境前 N（Mega 和非 Mega 分开取）
   - `team_battle.py`：3v3 配置文件（TOML）和报告
   - `team_matrix.py`：队伍对队伍：我方几队对手写的和随机抽的很多队各打一场 3v3，出总表和每一场的结果
+  - `best_response.py`：对固定对手策略的应对：对手的策略不变，逐步试探我方更好的打法
 - `tests/`：pytest 测试；`tests/fixtures/` 是用 PvPoke 源码生成的参考数据
 - `tools/pvpoke_ref/`：在 Node 里运行 PvPoke 源码、生成参考数据的脚本
 - `tools/compare_simple_policy.py`：简单规则策略与 PvPoke AI 的比较（`.venv/bin/python -m tools.compare_simple_policy`）
 - `tools/run_matchups.py`：按对战配置文件跑九宫格（`.venv/bin/python -m tools.run_matchups <配置文件>`，`--csv` 另存全部评分）
-- `tools/run_team_battle.py`：按 3v3 配置文件打一场、出报告（`.venv/bin/python -m tools.run_team_battle <配置文件>`）
-- `tools/run_team_matrix.py`：队伍对队伍（`.venv/bin/python -m tools.run_team_matrix <配置文件>`，`--csv` 另存全部对战，`--battle` 只打其中一场）
+- `tools/run_team_battle.py`：按 3v3 配置文件打一场、出报告（`.venv/bin/python -m tools.run_team_battle <配置文件>`；`--best-response 队名` 搜索这一队更好的打法）
+- `tools/run_team_matrix.py`：队伍对队伍（`.venv/bin/python -m tools.run_team_matrix <配置文件>`，`--csv` 另存全部对战，`--battle` 只打其中一场，再加 `--best-response` 搜索我方更好的打法）
 - `experiments/`：对战配置文件，例如 Mega 基格尔德在大师联盟（`mega_zygarde_ml.toml`）、Mega 雪妖女对环境前 N（`gl_mega_froslass_top.toml`）、3v3 的例子（`gl_3v3_example.toml`）、队伍对队伍的例子（`gl_team_matrix_example.toml`）；结果在 `docs/experiments/`
 - `data/`：PvPoke gamemaster.json 和排名（`rankings/`）的快照（来源见 `data/SOURCE.md`）
 - `data/custom/`：自定义覆盖文件（TOML），格式见 docs/mechanics.md 第 10 节
@@ -183,6 +184,22 @@ seed = 1            # 随机种子：同一个种子每次抽出同样的队伍
 ```
 
 报告（[docs/experiments/gl_team_matrix_example.md](docs/experiments/gl_team_matrix_example.md)）先是总表：我方每一队对手写的、抽样的、全部对手各赢平输几场、平均评分、平均剩余只数；然后我方每一队一张表，一场一行（对手成员、结果、评分、剩余只数和盾、回合数）；最后列出每一队对手和抽样的候选。`--battle` 只打其中一场，输出上面那种完整的 3v3 报告；`--csv` 把全部对战另存成一场一行的 CSV。例子里 Team A 对 51 队赢 13 场，把 Registeel 换成 Mega 雪妖女后赢 24 场。
+
+### 对固定对手策略的应对
+
+对手的策略不变（`TeamPolicy`），搜索我方更好的打法（`pogo_sim/best_response.py`，方法见 [docs/mechanics.md](docs/mechanics.md) 13.11）：
+
+```bash
+.venv/bin/python -m tools.run_team_battle experiments/gl_3v3_example.toml --best-response "Team A" --output docs/experiments/gl_3v3_best_response.md
+```
+
+```bash
+.venv/bin/python -m tools.run_team_matrix experiments/gl_team_matrix_example.toml --battle "Team A" "抽样 3" --best-response
+```
+
+方法是"逐步试探"：先让双方照原策略打一场，然后沿着当前最好的一场，把我方每个决定点（出招、主动换人、0 回合换人、开盾、选人）的其余选项都试一遍，之后照各自的策略打完；先比胜负再比评分，严格更好就改。结果不比原策略差，但不保证全局最优；搜索完全知道对手策略会怎么应对，所以是针对这个策略的打法。
+
+报告（[docs/experiments/gl_3v3_best_response.md](docs/experiments/gl_3v3_best_response.md)）里有原策略和搜索后的结果、改了哪些决定（每个决定点各选项打出来的结果），以及搜索后的这一场的完整过程。例子里 Team A 照原策略输（221），搜索改了 5 个决定后赢（593）：开局换上 Medicham 对 Swampert、第 11 回合不开盾、第 21 回合先放 ICE_PUNCH，最后两次 0 回合换人。
 
 ## 自定义宝可梦和招式
 

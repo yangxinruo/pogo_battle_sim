@@ -6,12 +6,15 @@
     .venv/bin/python -m tools.run_team_matrix experiments/gl_team_matrix_example.toml --csv team_matrix.csv
     # 只打其中一场，输出完整的 3v3 报告（换人和开盾的原因、时间线），同 tools/run_team_battle.py：
     .venv/bin/python -m tools.run_team_matrix experiments/gl_team_matrix_example.toml --battle "Team A" "抽样 3"
+    # 这一场里对方的策略不变，搜索我方更好的打法（逐步试探，pogo_sim/best_response.py）：
+    .venv/bin/python -m tools.run_team_matrix experiments/gl_team_matrix_example.toml --battle "Team A" "抽样 3" --best-response
 """
 
 import argparse
 import sys
 from pathlib import Path
 
+from pogo_sim.best_response import format_best_response_report, search_best_response
 from pogo_sim.config import ConfigError
 from pogo_sim.team_battle import format_team_battle_report, run_team_battle
 from pogo_sim.team_matrix import (
@@ -36,7 +39,12 @@ def main() -> None:
         "--battle", nargs=2, metavar=("OURS", "OPPONENT"), help="只打我方 OURS 对对手 OPPONENT 这一场，输出完整报告"
     )
     parser.add_argument("--no-timeline", action="store_true", help="和 --battle 一起用：报告里不附完整时间线")
+    parser.add_argument(
+        "--best-response", action="store_true", help="和 --battle 一起用：对方的策略不变，搜索我方更好的打法"
+    )
     args = parser.parse_args()
+    if (args.best_response or args.no_timeline) and not args.battle:
+        parser.error("--best-response、--no-timeline 要和 --battle 一起用")
 
     try:
         matrix = prepare_team_matrix(load_team_matrix_config(args.config))
@@ -48,9 +56,14 @@ def main() -> None:
 
     if args.battle:
         battle = pairing(matrix, team, opponent)
-        report = format_team_battle_report(
-            battle, run_team_battle(battle), source=str(args.config), include_timeline=not args.no_timeline
-        )
+        if args.best_response:
+            report = format_best_response_report(
+                battle, search_best_response(battle, 0), source=str(args.config), include_timeline=not args.no_timeline
+            )
+        else:
+            report = format_team_battle_report(
+                battle, run_team_battle(battle), source=str(args.config), include_timeline=not args.no_timeline
+            )
     else:
         results = run_team_matrix(matrix)
         report = format_report(matrix, results, source=str(args.config))

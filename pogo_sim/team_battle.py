@@ -450,15 +450,21 @@ def format_outcome(battle: TeamBattle, result: BattleResult) -> str:
     )
 
 
-def _format_team_section(battle: TeamBattle, side: int) -> list[str]:
+def policy_text(policy: TeamPolicyConfig) -> str:
+    """例如"TeamPolicy，默认参数"。"""
+    changed = format_params(policy, TeamPolicyConfig())
+    return f"TeamPolicy，{'和默认不同的参数：' + changed if changed else '默认参数'}"
+
+
+def _format_team_section(battle: TeamBattle, side: int, policy_note: str = "") -> list[str]:
+    """policy_note：策略那一行前面另加的说明（例如这一方的打法是搜索出来的）。"""
     team = battle.teams[side]
     setup = team.setup
     lines = [f"**{setup.name}**（第 {side} 方，{setup.shields} 盾）", ""]
     for slot, participant in enumerate(team.members):
         role = "首发" if slot == 0 else "后备"
         lines.append(f"- {role} {format_participant(battle.gm, participant)}")
-    changed = format_params(setup.policy, TeamPolicyConfig())
-    lines.append(f"- 策略：TeamPolicy，{'和默认不同的参数：' + changed if changed else '默认参数'}")
+    lines.append(f"- 策略：{policy_note}{policy_text(setup.policy)}")
     return lines
 
 
@@ -563,6 +569,20 @@ def format_team_battle_report(
     include_timeline: bool = True,
 ) -> str:
     """完整报告（Markdown）。"""
+    lines = format_settings(
+        battle,
+        source,
+        "双方都是 3v3 策略 TeamPolicy（规则和默认参数见 docs/mechanics.md 13.7）。"
+        "出招照简单规则策略；倒下后换上对位评分最高的；当前对位不好就主动换人；不在必输的对位上开盾",
+    )
+    lines += format_teams(battle)
+    lines += ["", "## 结果", "", format_outcome(battle, result), ""]
+    lines += format_battle_details(battle, result, include_timeline)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def format_settings(battle: TeamBattle, source: str, policy_line: str) -> list[str]:
+    """报告开头的设置：说明、配置文件、联盟和赛季规则、机制规则、覆盖文件、策略、评分口径。"""
     config = battle.config
     lines: list[str] = []
     if config.description:
@@ -574,26 +594,32 @@ def format_team_battle_report(
     lines.append(f"- 机制规则：{'和 PvPoke 默认不同的：' + changed_rules if changed_rules else '与 PvPoke 一致（默认）'}")
     for log in battle.gm.custom_log:
         lines.append(f"- 覆盖文件：{log}")
-    lines.append(
-        "- 策略：双方都是 3v3 策略 TeamPolicy（规则和默认参数见 docs/mechanics.md 13.7）。"
-        "出招照简单规则策略；倒下后换上对位评分最高的；当前对位不好就主动换人；不在必输的对位上开盾"
-    )
+    lines.append(f"- 策略：{policy_line}")
     lines.append(
         "- 评分：本项目的口径（docs/mechanics.md 13.2 D1），"
         "500 + 500 ×（己方剩余 HP 比例之和 − 对方剩余 HP 比例之和）÷ 每队只数，向下取整。双方加起来 1000"
     )
+    return lines
 
-    lines += ["", "## 队伍", ""]
+
+def format_teams(battle: TeamBattle, policy_notes: dict[int, str] | None = None) -> list[str]:
+    """"## 队伍"一节：两队的配置和策略，队伍检查。policy_notes：某一方策略那一行前面另加的说明。"""
+    notes = policy_notes or {}
+    lines = ["", "## 队伍", ""]
     for side in (0, 1):
-        lines += _format_team_section(battle, side)
+        lines += _format_team_section(battle, side, notes.get(side, ""))
         lines.append("")
+    config = battle.config
     size = config.rules.max_team_size
     mega_limit = config.season.max_megas_per_team
     mega_text = f"Mega 不超过 {mega_limit} 只" if mega_limit is not None else "Mega 不限"
     lines.append(f"队伍检查通过：每队 {size} 只；没有同一种宝可梦（按图鉴编号）；{mega_text}。")
+    return lines
 
-    lines += ["", "## 结果", "", format_outcome(battle, result), ""]
-    lines += ["## 每只的情况", ""]
+
+def format_battle_details(battle: TeamBattle, result: BattleResult, include_timeline: bool) -> list[str]:
+    """一场的细节：每只的情况、开局对位评分、换人、大招和开盾、时间线。"""
+    lines = ["## 每只的情况", ""]
     lines.append(
         "挨大招：被大招打中时开盾挡下的次数 / 队伍还有盾但没开的次数。被盾挡下的大招算 1 点伤害。"
     )
@@ -618,4 +644,4 @@ def format_team_battle_report(
         lines += ["## 时间线", ""]
         lines.append("每回合的决定（decides …，括号里是原因）和结算。T 后面是回合数。")
         lines += ["", "```text", format_timeline(result.events, timeline_names(battle), show_decisions=True), "```"]
-    return "\n".join(lines).rstrip() + "\n"
+    return lines

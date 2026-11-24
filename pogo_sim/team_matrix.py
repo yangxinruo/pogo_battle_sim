@@ -82,6 +82,7 @@ from pogo_sim.team_battle import (
     check_prepared_team,
     parse_common_settings,
     parse_team,
+    policy_text,
     prepare_team,
     run_team_battle,
 )
@@ -538,20 +539,15 @@ def _format_team_lines(gm: GameMaster, team: MatrixTeam) -> list[str]:
     for slot, participant in enumerate(team.members):
         role = "首发" if slot == 0 else "后备"
         lines.append(f"- {role} {format_participant(gm, participant)}")
-    lines.append(f"- 策略：{_policy_text(setup.policy)}")
+    lines.append(f"- 策略：{policy_text(setup.policy)}")
     return lines
-
-
-def _policy_text(policy: TeamPolicyConfig) -> str:
-    changed = format_params(policy, TeamPolicyConfig())
-    return f"TeamPolicy，{'和默认不同的参数：' + changed if changed else '默认参数'}"
 
 
 def _format_sample_section(matrix: TeamMatrix, sample: Sample) -> list[str]:
     spec = sample.spec
     lines = [f"### 随机抽的（{len(sample.teams)} 队）", ""]
     lines.append(f"{spec.describe(matrix.config.league, matrix.config.rules.max_team_size)}。")
-    lines.append(f"每队 {spec.shields} 盾；策略：{_policy_text(spec.policy)}。")
+    lines.append(f"每队 {spec.shields} 盾；策略：{policy_text(spec.policy)}。")
     for pool in sample.pools:
         if pool.skipped:
             lines += ["", f"{pool.spec.name}里建不了配置、不参加抽样的："]
