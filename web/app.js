@@ -163,11 +163,19 @@ function configChanged() {
 
 // ---- 宝可梦和招式的显示 ----
 
-function speciesText(species) {
-  const flags = [];
-  if (species.custom) flags.push("覆盖文件");
-  if (!species.released) flags.push("未实装");
-  return `${species.name} · ${species.types.join("/")}${flags.length ? ` · ${flags.join("、")}` : ""}`;
+/** 宝可梦名字后面的说明：属性、覆盖文件、未实装、PvPoke 在这个联盟的排名。 */
+function speciesFacts(species) {
+  const facts = [species.types.join("/")];
+  if (species.custom) facts.push("覆盖文件");
+  if (!species.released) facts.push("未实装");
+  if (species.rank) facts.push(`PvPoke 第 ${species.rank}`);
+  if (species.mega_rank) facts.push(`Mega 版排名第 ${species.mega_rank}`);
+  return facts.join(" · ");
+}
+
+function typeDots(types) {
+  return el("span", {class: "type-dots"},
+    types.map((type) => el("i", {style: `background: ${TYPE_COLORS[type] ?? "#9ca3af"}`, title: type})));
 }
 
 function moveText(moveId) {
@@ -210,7 +218,8 @@ function renderSettings() {
     async (value) => {
       config.league = Number(value);
       configChanged();
-      await reloadCatalog(); // 推荐配招跟联盟走
+      await reloadCatalog(); // 推荐配招和排名跟联盟走
+      renderTeams();
       rebuildAll();
     },
     {id: "league"},
@@ -251,8 +260,134 @@ async function reloadCatalog() {
   for (const name of state.config.custom_files) params.append("custom", name);
   state.catalog = await api(`/api/species?${params}`);
   state.speciesById = new Map(state.catalog.species.map((s) => [s.id, s]));
-  document.getElementById("species-options").replaceChildren(
-    ...state.catalog.species.map((s) => el("option", {value: s.id}, speciesText(s))));
+  for (const species of state.catalog.species) species.nameKey = normalizeSearch(species.name);
+}
+
+// ---- 选宝可梦：可以搜的下拉框 ----
+// 点一下输入框就列出全部宝可梦（有 PvPoke 排名时按这个联盟的排名，排名外的按图鉴编号）。
+// 输入名字的一部分可以缩小范围：拆成几个词，每个词都要在 web_api.search_text 给的文字里出现，不分先后，
+// 所以 "mega venu"、"venusaur mega"、"zygarde 100"、"legendary" 都能搜到。
+// 选好一只以后，旁边的"形态"下拉框列出同一图鉴编号的各形态（普通、暗影、Mega……），可以直接换。
+
+const PICKER_LIMIT = 100; // 下拉框里最多列出几个（太多时继续输入缩小范围）
+
+/** 和 web_api.normalize_search 一样：小写、去掉重音、标点换成空格。 */
+function normalizeSearch(text) {
+  return text.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/** 搜宝可梦，返回排好序的列表。
+ *  排序：名字以输入开头的最前；其次每个词都是某个词的开头；然后按 PvPoke 普通排名（排名外的在后面）、图鉴顺序。 */
+function searchSpecies(query) {
+  const q = normalizeSearch(query);
+  const words = q.split(" ").filter(Boolean);
+  const found = [];
+  state.catalog.species.forEach((species, index) => {
+    const text = ` ${species.search}`;
+    if (!words.every((w) => text.includes(w))) return;
+    let tier = 2;
+    if (species.nameKey.startsWith(q)) tier = 0;
+    else if (words.every((w) => text.includes(` ${w}`))) tier = 1;
+    found.push({species, tier, rank: species.rank ?? Infinity, index});
+  });
+  found.sort((a, b) => a.tier - b.tier || (a.rank - b.rank || 0) || a.index - b.index);
+  return found.map((f) => f.species);
+}
+
+function pickerNote(typed, count) {
+  const hint = "名字用英文，几个词不分先后，如 mega venu、zygarde 100";
+  if (typed) return count ? `搜到 ${count} 个（↑↓ 选，回车确定，Esc 取消）` : `没有搜到。${hint}`;
+  const ranked = state.catalog.species.some((s) => s.rank);
+  const order = ranked ? "按 PvPoke 这个联盟的排名列出（排名外的和 Mega 按图鉴编号排在后面）" : "按图鉴编号列出";
+  return `${order}。输入可以搜：${hint}`;
+}
+
+/** 选宝可梦的输入框和下拉列表。打开时输入框先清空（原来的名字留作灰字提示），没选就关掉时恢复原样。 */
+function speciesPicker(side, slot, member, species) {
+  const currentText = species ? species.name : member.species;
+  const input = el("input", {
+    class: "species",
+    value: currentText,
+    placeholder: "点一下选，或输入名字搜",
+    autocomplete: "off",
+    spellcheck: "false",
+  });
+  const menu = el("div", {class: "species-menu", hidden: true});
+  let results = [];
+  let active = 0;
+
+  const optionNodes = () => menu.querySelectorAll(".species-option");
+  const highlight = (i) => {
+    const nodes = optionNodes();
+    if (nodes.length === 0) return;
+    active = Math.max(0, Math.min(i, nodes.length - 1));
+    nodes.forEach((node, j) => node.classList.toggle("active", j === active));
+    nodes[active].scrollIntoView({block: "nearest"});
+  };
+  const show = () => {
+    const typed = input.value.trim() !== "";
+    results = searchSpecies(input.value);
+    const rows = results.slice(0, PICKER_LIMIT).map((s, i) => el("div", {
+      class: "species-option",
+      onmousedown: (e) => { e.preventDefault(); pick(s.id); }, // preventDefault：不让输入框先失去焦点
+      onmousemove: () => { if (active !== i) highlight(i); },
+    }, typeDots(s.types), el("span", {class: "option-name"}, s.name), el("span", {class: "muted"}, speciesFacts(s))));
+    if (results.length > PICKER_LIMIT) {
+      rows.push(el("div", {class: "menu-note"}, `还有 ${results.length - PICKER_LIMIT} 个没列出，继续输入可以缩小范围`));
+    }
+    menu.replaceChildren(el("div", {class: "menu-note"}, pickerNote(typed, results.length)), ...rows);
+    menu.hidden = false;
+    menu.scrollTop = 0;
+    highlight(0);
+  };
+  const close = () => {
+    menu.hidden = true;
+    input.value = currentText;
+    input.placeholder = "点一下选，或输入名字搜";
+  };
+  const open = () => {
+    input.value = "";
+    input.placeholder = currentText || "点一下选，或输入名字搜";
+    show();
+  };
+  const pick = (id) => {
+    close();
+    if (id === member.species) input.blur(); // 选回原来那只：配招不动
+    else setSpecies(side, slot, id);
+  };
+
+  input.addEventListener("focus", open);
+  input.addEventListener("click", () => { if (menu.hidden) open(); });
+  input.addEventListener("input", show);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (menu.hidden) open();
+      else highlight(active + (e.key === "ArrowDown" ? 1 : -1));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (!menu.hidden && results.length > 0) pick(results[active].id);
+    } else if (e.key === "Escape") {
+      close();
+      input.blur();
+    }
+  });
+  input.addEventListener("blur", () => {
+    if (menu.hidden) return;
+    // 输入了完整的名字或 ID 但没点选：也算选了；其他情况恢复原样
+    const q = normalizeSearch(input.value);
+    const exact = q && state.catalog.species.find((s) => s.nameKey === q || normalizeSearch(s.id) === q);
+    if (exact) pick(exact.id);
+    else close();
+  });
+  return el("span", {class: "species-picker"}, input, menu);
+}
+
+/** 同一图鉴编号的各形态（普通、暗影、Mega、地区形态……）；只有一种时为空。 */
+function formsOf(species) {
+  const forms = state.catalog.species.filter((s) => s.dex === species.dex);
+  return forms.length > 1 ? forms : [];
 }
 
 // ---- 两队 ----
@@ -295,8 +430,9 @@ function renderMember(side, slot) {
   };
 
   let speciesNote = "";
-  if (species) speciesNote = speciesText(species);
+  if (species) speciesNote = speciesFacts(species);
   else if (member.species) speciesNote = el("span", {class: "bad"}, "没有这个宝可梦");
+  const forms = species ? formsOf(species) : [];
 
   const moves = [];
   if (species) {
@@ -321,13 +457,9 @@ function renderMember(side, slot) {
   return el("div", {class: "member", id: `member-${memberKey(side, slot)}`},
     el("div", {class: "member-head"},
       el("span", {class: "role"}, slot === 0 ? "首发" : `后备 ${slot}`),
-      el("input", {
-        class: "species",
-        list: "species-options",
-        value: member.species,
-        placeholder: "宝可梦（名字或 ID）",
-        onchange: (e) => setSpecies(side, slot, e.target.value),
-      }),
+      speciesPicker(side, slot, member, species),
+      forms.length ? el("label", {class: "forms", title: "同一图鉴编号的其他形态：普通、暗影、Mega、地区形态……"}, "形态 ",
+        select(forms.map((s) => [s.id, s.name]), species.id, (id) => setSpecies(side, slot, id))) : null,
       el("span", {class: "muted"}, speciesNote),
     ),
     moves.length ? el("div", {class: "moves"}, moves) : null,
@@ -402,14 +534,9 @@ function refreshMember(side, slot) {
   renderBuild(side, slot);
 }
 
-/** 选了宝可梦（ID，或者完整的英文名）：换成它的推荐配招。 */
-function setSpecies(side, slot, value) {
+/** 选了宝可梦（ID）：换成它的推荐配招。 */
+function setSpecies(side, slot, id) {
   const member = state.config.team[side].member[slot];
-  let id = value.trim();
-  if (!state.speciesById.has(id)) {
-    const found = state.catalog.species.find((s) => s.name.toLowerCase() === id.toLowerCase());
-    if (found) id = found.id;
-  }
   member.species = id;
   const species = state.speciesById.get(id);
   if (species) {

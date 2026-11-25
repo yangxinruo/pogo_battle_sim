@@ -304,6 +304,31 @@ def test_species_catalog():
     assert catalog["moves"]["HYDRO_CANNON"]["energy"] == 40  # 大招是要花的能量
 
 
+def test_species_catalog_search_and_rank():
+    species = {s["id"]: s for s in web_api.species_catalog([], "1500")["species"]}
+    # 搜索用的文字：网页把输入拆成词，每个词都要在这里出现（不分先后）
+    def words(species_id):
+        return species[species_id]["search"].split()
+
+    assert {"zygarde", "complete", "forme", "100", "legendary"} <= set(words("zygarde_complete"))
+    assert {"venusaur", "mega"} <= set(words("venusaur_mega"))
+    assert "mega" in words("kyogre_primal")  # 原始回归也算 Mega
+    assert "mega" not in words("meganium")
+    assert {"mr", "mime", "mrmime"} <= set(words("mr_mime"))
+    # 名次：普通排名；Mega 不在普通排名里，另给 Mega 版排名的名次
+    assert (species["melmetal"]["rank"], species["melmetal"]["mega_rank"]) == (1, None)
+    assert (species["sableye_mega"]["rank"], species["sableye_mega"]["mega_rank"]) == (None, 1)
+    assert species["zygarde_complete"]["rank"] is None  # 排名里没有
+
+
+def test_normalize_search():
+    # 和网页 app.js 的 normalizeSearch 一样：小写、去掉重音、标点换成空格
+    assert web_api.normalize_search("Flabébé") == "flabebe"
+    assert web_api.normalize_search("Mr. Mime (Galarian)") == "mr mime galarian"
+    assert web_api.normalize_search("Zygarde 100% complete form") == "zygarde 100 complete form"
+    assert web_api.normalize_search("  ") == ""
+
+
 def test_species_catalog_with_custom_file():
     catalog = web_api.species_catalog(["mega_froslass.toml"])
     species = {s["id"]: s for s in catalog["species"]}
@@ -319,6 +344,7 @@ def test_species_catalog_league():
     # 小小杯没有排名文件：没有推荐配招，但宝可梦照样列出
     catalog = web_api.species_catalog([], "500")
     assert catalog["species"] and all(s["recommended"] is None for s in catalog["species"])
+    assert all(s["rank"] is None and s["mega_rank"] is None for s in catalog["species"])
     with pytest.raises(ConfigError, match="league 要写正整数"):
         web_api.species_catalog([], "abc")
     with pytest.raises(ConfigError, match="data/custom/ 里没有覆盖文件"):

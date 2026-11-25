@@ -5,7 +5,7 @@
 tools/run_web.py 把这些函数转发成 HTTP 接口。
 
 - options()：联盟、赛季规则、覆盖文件、策略的可选值，以及例子配置
-- species_catalog(custom_files)：全部宝可梦（名字、属性、招式池）和招式
+- species_catalog(custom_files, league)：全部宝可梦（名字、属性、招式池、搜索用的文字、PvPoke 排名）和招式
 - build_member(raw)：一只宝可梦按赛季规则建配置（CP、等级、IV、说明）
 - team_battle(raw)：打一场 3v3，返回结果、每只的情况、换人和开盾、逐回合时间线、Markdown 报告
 - manual_battle(raw)：手动对战，玩家操作一队；重打到下一个要玩家决定的地方，返回局面和能选什么（4c）
@@ -16,6 +16,8 @@ tools/run_web.py 把这些函数转发成 HTTP 接口。
 """
 
 import json
+import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import asdict, replace
 from functools import lru_cache
@@ -37,7 +39,7 @@ from pogo_sim.config import (
 )
 from pogo_sim.combatant import Combatant
 from pogo_sim.damage import calculate_damage
-from pogo_sim.gamemaster import GameMaster, Move, load_gamemaster
+from pogo_sim.gamemaster import GameMaster, Move, Species, load_gamemaster
 from pogo_sim.manual import (
     QUESTION_NAMES,
     ManualDecision,
@@ -48,7 +50,7 @@ from pogo_sim.manual import (
     play_manual,
 )
 from pogo_sim.rules import BattleRules
-from pogo_sim.rankings import load_rankings
+from pogo_sim.rankings import RankedPokemon, load_rankings
 from pogo_sim.rules import PVPOKE_COMPAT
 from pogo_sim.season import LEAGUE_NAMES, SEASON_PRESETS, league_name
 from pogo_sim.team_battle import (
@@ -173,21 +175,63 @@ def _move_info(move: Move) -> dict[str, Any]:
     }
 
 
-def recommended_movesets(league: int) -> dict[str, list[str]]:
-    """PvPoke 排名里这个联盟的推荐配招：宝可梦 ID → [快招, 大招, ...]。
+def league_rankings(league: int) -> dict[str, dict[str, RankedPokemon]]:
+    """PvPoke 这个联盟的排名：{"all": {宝可梦 ID: 名次}, "mega": {...}}。这个联盟没有的排名文件不在里面。
 
-    先看普通排名（"all"），没有的（Mega）再看 Mega 版排名。这个联盟没有排名文件时为空。
-    网页上选了宝可梦以后先填这一套，只是方便，可以改。
+    "all" 是普通排名（没有 Mega）；"mega" 是 Mega 版排名（Mega 和非 Mega 一起排）。
     """
-    movesets: dict[str, list[str]] = {}
-    for cup in ("mega", "all"):  # 后面的覆盖前面的：两套都有时用普通排名的
+    rankings = {}
+    for cup in ("all", "mega"):
         try:
-            ranked = load_rankings(cup, league)
+            rankings[cup] = {entry.species_id: entry for entry in load_rankings(cup, league)}
         except ValueError:
             continue
-        for entry in ranked:
-            movesets[entry.species_id] = [entry.moveset.fast, *entry.moveset.charged]
-    return movesets
+    return rankings
+
+
+def recommended_moveset(rankings: dict[str, dict[str, RankedPokemon]], species_id: str) -> list[str] | None:
+    """PvPoke 推荐的配招 [快招, 大招, ...]：先看普通排名，没有的（Mega）再看 Mega 版排名；都没有时为 None。
+
+    网页上选了宝可梦以后先填这一套，只是方便，可以改。
+    """
+    for cup in ("all", "mega"):
+        entry = rankings.get(cup, {}).get(species_id)
+        if entry is not None:
+            return [entry.moveset.fast, *entry.moveset.charged]
+    return None
+
+
+# 网页搜宝可梦时，名字和 ID 以外也能搜到的词：gamemaster tags 里挑的几个（Mega 另外加），以及少数别名。
+SEARCH_TAGS = ("legendary", "mythical", "ultrabeast")
+SEARCH_ALIASES: dict[str, str] = {
+    "zygarde_complete": "100%",  # 正作叫 100% Forme，PvPoke 的名字是 Complete Forme
+}
+
+
+def normalize_search(text: str) -> str:
+    """搜索用的写法：小写、去掉重音（Flabébé → flabebe）、标点换成空格（Mr. Mime → mr mime）。
+
+    网页（app.js 的 normalizeSearch）用同样的办法处理输入的文字。
+    """
+    text = unicodedata.normalize("NFKD", text.lower())
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
+
+
+def search_text(species: Species) -> str:
+    """网页搜这只宝可梦时在哪些文字里找：名字、名字去掉空格、ID、部分 tags、Mega（含原始回归）、别名。
+
+    网页把输入拆成几个词，每个词都在这里出现（不分先后）就算搜到，
+    所以 "mega venu"、"venusaur mega"、"zygarde 100" 都能搜到。
+    """
+    name = normalize_search(species.name)
+    words = [name, name.replace(" ", ""), normalize_search(species.species_id)]
+    words += [tag for tag in SEARCH_TAGS if tag in species.tags]
+    if species.is_mega:
+        words.append("mega")
+    if species.species_id in SEARCH_ALIASES:
+        words.append(normalize_search(SEARCH_ALIASES[species.species_id]))
+    return " ".join(words)
 
 
 def _parse_league(raw: Any) -> int | None:
@@ -206,15 +250,19 @@ def _parse_league(raw: Any) -> int | None:
 def species_catalog(custom_files: Any = (), league: Any = None) -> dict[str, Any]:
     """全部宝可梦和招式（加载选中的覆盖文件后）。
 
-    宝可梦按 gamemaster 的顺序；custom 是覆盖文件新加的（gamemaster 里没有）。
+    宝可梦按 gamemaster 的顺序（图鉴编号，同一只的各形态挨着）；custom 是覆盖文件新加的（gamemaster 里没有）。
     fast / charged 是招式池；extra_charged 是第三个大招能选的（只有部分 Mega 有）。
-    给了 league 时，recommended 是 PvPoke 在这个联盟推荐的配招（排名里没有的为 None）。
+    search 是网页搜宝可梦时找的文字（search_text）。
+    给了 league 时：recommended 是 PvPoke 在这个联盟推荐的配招，rank 是普通排名的名次，
+    mega_rank 是 Mega 在 Mega 版排名里的名次；排名里没有的为 None。
     """
     names = list(custom_files)
     gm = load_gamemaster(custom_files=custom_paths(names))
     base_ids = set(load_gamemaster().species) if names else set(gm.species)
     league_cp = _parse_league(league)
-    recommended = recommended_movesets(league_cp) if league_cp is not None else {}
+    rankings = league_rankings(league_cp) if league_cp is not None else {}
+    normal_rank = {species_id: entry.rank for species_id, entry in rankings.get("all", {}).items()}
+    mega_rank = {species_id: entry.rank for species_id, entry in rankings.get("mega", {}).items()}
     species = [
         {
             "id": s.species_id,
@@ -228,7 +276,10 @@ def species_catalog(custom_files: Any = (), league: Any = None) -> dict[str, Any
             "fast": list(s.fast_move_ids),
             "charged": list(s.charged_move_ids),
             "extra_charged": list(s.extra_charged_move_ids) if s.is_mega else [],
-            "recommended": recommended.get(s.species_id),
+            "recommended": recommended_moveset(rankings, s.species_id),
+            "rank": normal_rank.get(s.species_id),
+            "mega_rank": mega_rank.get(s.species_id) if s.is_mega else None,
+            "search": search_text(s),
         }
         for s in gm.species.values()
     ]
