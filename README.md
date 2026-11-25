@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成。第 3 步（3v3）拆成的几个单元都已完成，拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节：3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）、3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）、3v3-e（3v3 配置文件与报告，含队伍检查）、3v3-f1（PvPoke 排名快照；1v1 对环境前 N 的批量九宫格，Mega 和非 Mega 分开取）、3v3-f2（队伍对队伍：我方的队伍对手写的和从环境前 N 随机抽的很多队各打一场 3v3）和 3v3-g（对固定对手策略的应对：对手的 TeamPolicy 不变，逐步试探我方更好的打法）。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成。第 3 步（3v3）拆成的几个单元都已完成，拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节：3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）、3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）、3v3-e（3v3 配置文件与报告，含队伍检查）、3v3-f1（PvPoke 排名快照；1v1 对环境前 N 的批量九宫格，Mega 和非 Mega 分开取）、3v3-f2（队伍对队伍：我方的队伍对手写的和从环境前 N 随机抽的很多队各打一场 3v3）和 3v3-g（对固定对手策略的应对：对手的 TeamPolicy 不变，逐步试探我方更好的打法）。第 4 步（网页界面）进行中：4a（本地服务器 + 打一场 3v3 的页面）已完成，接下来是战斗过程图、手动对战、能力值排序，需求见 [docs/mechanics.md](docs/mechanics.md) 第 14 节。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -33,16 +33,29 @@
   - `team_battle.py`：3v3 配置文件（TOML）和报告
   - `team_matrix.py`：队伍对队伍：我方几队对手写的和随机抽的很多队各打一场 3v3，出总表和每一场的结果
   - `best_response.py`：对固定对手策略的应对：对手的策略不变，逐步试探我方更好的打法
+  - `web_api.py`：网页界面的接口（收 dict、回 dict），只做转换
 - `tests/`：pytest 测试；`tests/fixtures/` 是用 PvPoke 源码生成的参考数据
 - `tools/pvpoke_ref/`：在 Node 里运行 PvPoke 源码、生成参考数据的脚本
 - `tools/compare_simple_policy.py`：简单规则策略与 PvPoke AI 的比较（`.venv/bin/python -m tools.compare_simple_policy`）
 - `tools/run_matchups.py`：按对战配置文件跑九宫格（`.venv/bin/python -m tools.run_matchups <配置文件>`，`--csv` 另存全部评分）
 - `tools/run_team_battle.py`：按 3v3 配置文件打一场、出报告（`.venv/bin/python -m tools.run_team_battle <配置文件>`；`--best-response 队名` 搜索这一队更好的打法）
 - `tools/run_team_matrix.py`：队伍对队伍（`.venv/bin/python -m tools.run_team_matrix <配置文件>`，`--csv` 另存全部对战，`--battle` 只打其中一场，再加 `--best-response` 搜索我方更好的打法）
+- `tools/run_web.py`：本地网页界面的服务器（`.venv/bin/python -m tools.run_web`）
+- `web/`：网页的文件（HTML / JS / CSS，不用构建）
 - `experiments/`：对战配置文件，例如 Mega 基格尔德在大师联盟（`mega_zygarde_ml.toml`）、Mega 雪妖女对环境前 N（`gl_mega_froslass_top.toml`）、3v3 的例子（`gl_3v3_example.toml`）、队伍对队伍的例子（`gl_team_matrix_example.toml`）；结果在 `docs/experiments/`
 - `data/`：PvPoke gamemaster.json 和排名（`rankings/`）的快照（来源见 `data/SOURCE.md`）
 - `data/custom/`：自定义覆盖文件（TOML），格式见 docs/mechanics.md 第 10 节
 - `docs/`：机制规格文档
+
+## 网页界面
+
+在浏览器里选队伍、打一场 3v3、看结果和逐回合时间线（第 4 步，4a；需求和分步见 [docs/mechanics.md](docs/mechanics.md) 第 14 节）：
+
+```bash
+.venv/bin/python -m tools.run_web
+```
+
+启动后自动打开 http://127.0.0.1:8000（只监听本机；`--port` 换端口，`--no-browser` 不开浏览器，Ctrl+C 停止）。页面只负责填表和显示，建配置、检查、对战都在 Python 引擎里（`pogo_sim/web_api.py`）；队伍的写法和 3v3 配置文件一样，浏览器会记住上次填的。
 
 ## 开发环境
 

@@ -1,0 +1,131 @@
+/* 网页界面的样式。第 0 方蓝色、第 1 方橙色。 */
+
+:root {
+  --side-0: #2563eb;
+  --side-1: #ea580c;
+  --side-0-light: #eff6ff;
+  --side-1-light: #fff7ed;
+  --good: #15803d;
+  --bad: #b91c1c;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --bg: #f9fafb;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  color: #111827;
+  background: var(--bg);
+}
+
+header, main { max-width: 1280px; margin: 0 auto; padding: 0 16px; }
+header { padding-top: 16px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 0 0 12px; }
+.muted { color: var(--muted); }
+.bad { color: var(--bad); }
+.good { color: var(--good); }
+
+.card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+}
+
+.row { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+label { white-space: nowrap; }
+input, select, button { font: inherit; }
+input[type="number"] { width: 4.5em; }
+select { max-width: 100%; }
+
+#custom-files { margin-top: 12px; display: flex; flex-direction: column; gap: 4px; }
+
+/* ---- 两队 ---- */
+
+.teams { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 900px) { .teams { grid-template-columns: 1fr; } }
+.teams .card { margin: 0; }
+.team.side-0 { border-top: 4px solid var(--side-0); }
+.team.side-1 { border-top: 4px solid var(--side-1); }
+.team-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 8px; }
+.team-name { font-weight: 600; font-size: 15px; width: 12em; }
+
+.member { border-top: 1px solid var(--border); padding: 10px 0; }
+.member-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.role { font-size: 12px; color: var(--muted); width: 3.5em; }
+.species { width: 14em; }
+.moves { display: grid; grid-template-columns: 4.5em 1fr; gap: 4px 8px; margin: 8px 0 4px 3.5em; align-items: center; }
+.moves select { width: 100%; }
+.member details { margin-left: 3.5em; }
+.member summary { cursor: pointer; color: var(--muted); }
+.details-grid { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 8px 0; align-items: center; }
+.notes { margin: 4px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+.build { margin-left: 3.5em; font-size: 13px; }
+
+/* ---- 按钮、错误 ---- */
+
+.actions { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
+button { padding: 6px 14px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; }
+button:hover { background: #f3f4f6; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: #111827; color: #fff; border-color: #111827; }
+button.primary:hover { background: #374151; }
+
+.error {
+  white-space: pre-wrap;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: var(--bad);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+/* ---- 结果 ---- */
+
+.result-head { display: flex; justify-content: space-between; align-items: center; }
+.outcome { font-size: 16px; font-weight: 600; }
+.stale { color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 6px 10px; }
+.team-line { margin: 4px 0; }
+.team-line .name { font-weight: 600; }
+.side-0 .name, .name.side-0 { color: var(--side-0); }
+.side-1 .name, .name.side-1 { color: var(--side-1); }
+
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid var(--border); padding: 4px 8px; text-align: left; vertical-align: top; }
+td { white-space: nowrap; }
+td.text, .timeline td { white-space: normal; }  /* 原因、事件这类长文字才换行 */
+th { background: #f3f4f6; font-weight: 600; white-space: nowrap; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+
+.rating.good { background: #f0fdf4; }
+.rating.bad { background: #fef2f2; }
+
+.hp { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.bar { display: inline-block; width: 60px; height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
+.bar .fill { height: 100%; }
+.fill.high { background: #22c55e; }
+.fill.mid { background: #eab308; }
+.fill.low { background: #ef4444; }
+
+/* ---- 时间线 ---- */
+
+.timeline-controls { margin-bottom: 8px; }
+.timeline td { font-size: 12px; }
+.timeline td.turn { white-space: nowrap; color: var(--muted); }
+.timeline td.events-0 { background: var(--side-0-light); width: 34%; }
+.timeline td.events-1 { background: var(--side-1-light); width: 34%; }
+.ev { margin: 1px 0; }
+.ev .who { font-weight: 600; }
+.ev.decision { color: var(--muted); }
+.ev.charged { font-weight: 600; }
+.ev.faint { color: var(--bad); font-weight: 600; }
+.ev.switch { color: #7c3aed; }
+.ev.cancelled { color: var(--muted); text-decoration: line-through; }
+.state-line { white-space: nowrap; }

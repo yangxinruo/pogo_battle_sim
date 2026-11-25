@@ -2,6 +2,7 @@
 
 用 tools/run_team_battle.py 运行。例子：experiments/gl_3v3_example.toml。
 队伍对队伍（team_matrix.py）也用这里的配置解析（parse_common_settings、parse_team）和建队伍（prepare_team、assemble_team_battle）。
+网页界面（web_api.py）发来的配置是 dict，用 parse_team_battle_config 检查，和配置文件走同一套检查。
 
 文件格式：
     description = "说明"                    # 可选
@@ -72,7 +73,7 @@ from pogo_sim.timeline import DecisionEvent, FaintEvent, MoveEvent, SwitchEvent,
 _TOP_LEVEL_KEYS = {"description", "custom_files", "league", "season", "rules", "policy", "team"}
 _TEAM_KEYS = {"name", "shields", "policy", "member"}
 
-_SWITCH_KINDS = {"switch": "主动换人", "zero_turn": "0 回合换人", "replacement": "倒下后换人"}
+SWITCH_KINDS = {"switch": "主动换人", "zero_turn": "0 回合换人", "replacement": "倒下后换人"}
 
 
 # ---- 配置 ----
@@ -113,9 +114,16 @@ class CommonSettings:
 def load_team_battle_config(path: Path | str) -> TeamBattleConfig:
     """读取并检查 3v3 配置文件（格式见模块说明）。写错时抛出 ConfigError。"""
     path = Path(path)
-    raw = load_toml(path)
-    where = path.name
+    return parse_team_battle_config(load_toml(path), path.name)
 
+
+def parse_team_battle_config(raw: dict[str, Any], where: str) -> TeamBattleConfig:
+    """检查已经读进来的 3v3 配置（和 TOML 文件同样的键，例如网页发来的 JSON）。
+
+    where 是报错信息开头的来源（文件名，或者"网页"）。写错时抛出 ConfigError。
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}：配置要写成表（键值对），得到 {type(raw).__name__}")
     check_unknown_keys(raw, _TOP_LEVEL_KEYS, where)
     for key in ("league", "season", "team"):
         if key not in raw:
@@ -514,6 +522,56 @@ def _decision_for(result: BattleResult, switch: SwitchEvent) -> DecisionEvent | 
     return found
 
 
+@dataclass(frozen=True)
+class SwitchRecord:
+    """一次换人和策略给的原因（报告的"换人"一节、网页都用）。"""
+
+    turn: int
+    side: int
+    from_slot: int
+    to_slot: int
+    kind: str  # "switch" / "zero_turn" / "replacement"，同 SwitchEvent.kind
+    reason: str  # 找不到对应的决定时为空字符串
+
+
+def switch_records(result: BattleResult) -> list[SwitchRecord]:
+    records = []
+    for event in result.events:
+        if isinstance(event, SwitchEvent):
+            decision = _decision_for(result, event)
+            records.append(SwitchRecord(
+                event.turn, event.actor, event.from_slot, event.to_slot, event.kind,
+                decision.reason if decision else "",
+            ))
+    return records
+
+
+@dataclass(frozen=True)
+class ChargedRecord:
+    """一个大招的结果和开不开盾的原因（报告的"大招和开盾"一节、网页都用）。"""
+
+    turn: int
+    side: int  # 出招的一方
+    attacker_slot: int
+    move_id: str
+    target_slot: int  # 挨打的是对方的第几只
+    damage: int  # 被挡下时为 1
+    shielded: bool
+    hp_after: int  # 挨打那只剩下的 HP
+    shield_reason: str | None  # 守方没有盾时为 None
+
+
+def charged_records(result: BattleResult) -> list[ChargedRecord]:
+    return [
+        ChargedRecord(
+            event.turn, event.actor, event.actor_slot, event.move_id, event.target_slot,
+            event.damage, event.shielded, event.defender_hp_after, event.shield_reason,
+        )
+        for event in result.events
+        if isinstance(event, MoveEvent) and event.is_charged
+    ]
+
+
 def _escape(text: str) -> str:
     """表格格子里的 | 要转义。"""
     return text.replace("|", "\\|")
@@ -521,17 +579,14 @@ def _escape(text: str) -> str:
 
 def _format_switches(battle: TeamBattle, result: BattleResult) -> str:
     rows = []
-    for event in result.events:
-        if not isinstance(event, SwitchEvent):
-            continue
-        team = battle.teams[event.actor]
-        decision = _decision_for(result, event)
+    for record in switch_records(result):
+        team = battle.teams[record.side]
         rows.append([
-            str(event.turn),
+            str(record.turn),
             team.setup.name,
-            f"{team.names[event.from_slot]} → {team.names[event.to_slot]}",
-            _SWITCH_KINDS[event.kind],
-            _escape(decision.reason) if decision else "",
+            f"{team.names[record.from_slot]} → {team.names[record.to_slot]}",
+            SWITCH_KINDS[record.kind],
+            _escape(record.reason),
         ])
     if not rows:
         return "没有换人。"
@@ -540,22 +595,20 @@ def _format_switches(battle: TeamBattle, result: BattleResult) -> str:
 
 def _format_charged(battle: TeamBattle, result: BattleResult) -> str:
     rows = []
-    for event in result.events:
-        if not isinstance(event, MoveEvent) or not event.is_charged:
-            continue
-        attacker = battle.teams[event.actor]
-        defender = battle.teams[1 - event.actor]
-        if event.shielded:
+    for record in charged_records(result):
+        attacker = battle.teams[record.side]
+        defender = battle.teams[1 - record.side]
+        if record.shielded:
             outcome = "开盾挡下"
         else:
-            outcome = f"{event.damage} 伤害，剩 HP {event.defender_hp_after}"
+            outcome = f"{record.damage} 伤害，剩 HP {record.hp_after}"
         rows.append([
-            str(event.turn),
-            attacker.names[event.actor_slot],
-            event.move_id,
-            defender.names[event.target_slot],
+            str(record.turn),
+            attacker.names[record.attacker_slot],
+            record.move_id,
+            defender.names[record.target_slot],
             outcome,
-            _escape(event.shield_reason) if event.shield_reason is not None else "没有盾",
+            _escape(record.shield_reason) if record.shield_reason is not None else "没有盾",
         ])
     if not rows:
         return "没有放大招。"

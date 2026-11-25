@@ -164,22 +164,32 @@ _SWITCH_TEXT = {
 }
 
 
-def format_event(event: Event, names: Names) -> str:
-    """一行文字描述一个事件。names 见 Names。"""
+def event_actor(event: Event) -> tuple[int, int]:
+    """事件是哪一方的第几只（时间线里这一行开头的名字）。"""
+    match event:
+        case FaintEvent():
+            return event.actor, event.slot
+        case SwitchEvent():
+            return event.actor, event.from_slot
+        case DecisionEvent() | MoveEvent() | CancelledEvent():
+            return event.actor, event.actor_slot
+    raise TypeError(f"不认识的事件：{event!r}")
+
+
+def describe_event(event: Event, names: Names) -> str:
+    """一个事件的文字，不带开头的回合数和名字（网页按回合、按方排表时用）。"""
     match event:
         case DecisionEvent():
-            prefix = f"T{event.turn:>4}  {_column(_name(names, event.actor, event.actor_slot))}"
             if event.switch_to is not None:
                 target = _name(names, event.actor, event.switch_to)
-                return f"{prefix}decides {event.action} -> {target}  ({event.reason})"
+                return f"decides {event.action} -> {target}  ({event.reason})"
             if event.action == "stay":
-                return f"{prefix}decides not to switch  ({event.reason})"
-            return f"{prefix}decides {event.action} {event.move_id}  ({event.reason})"
+                return f"decides not to switch  ({event.reason})"
+            return f"decides {event.action} {event.move_id}  ({event.reason})"
         case MoveEvent():
-            prefix = f"T{event.turn:>4}  {_column(_name(names, event.actor, event.actor_slot))}"
             kind = "CHARGED" if event.is_charged else "fast"
             line = (
-                f"{prefix}{kind} {event.move_id} -> {event.damage} dmg"
+                f"{kind} {event.move_id} -> {event.damage} dmg"
                 f"{' (shielded)' if event.shielded else ''}"
                 f", {_name(names, 1 - event.actor, event.target_slot)} HP {event.defender_hp_after}"
                 f", energy {event.energy_after}"
@@ -190,13 +200,11 @@ def format_event(event: Event, names: Names) -> str:
                 line += f"  [effects: {_format_effects(event.effects, names, event)}]"
             return line
         case CancelledEvent():
-            prefix = f"T{event.turn:>4}  {_column(_name(names, event.actor, event.actor_slot))}"
-            return f"{prefix}{event.move_id} cancelled ({event.reason})"
+            return f"{event.move_id} cancelled ({event.reason})"
         case FaintEvent():
-            return f"T{event.turn:>4}  {_column(_name(names, event.actor, event.slot))}FAINTS"
+            return "FAINTS"
         case SwitchEvent():
-            prefix = f"T{event.turn:>4}  {_column(_name(names, event.actor, event.from_slot))}"
-            line = f"{prefix}{_SWITCH_TEXT[event.kind]} {_name(names, event.actor, event.to_slot)}"
+            line = f"{_SWITCH_TEXT[event.kind]} {_name(names, event.actor, event.to_slot)}"
             details = []
             if event.wait_ms:
                 details.append(f"waited {event.wait_ms / 1000:g}s")
@@ -206,6 +214,12 @@ def format_event(event: Event, names: Names) -> str:
                 line += f"  ({', '.join(details)})"
             return line
     raise TypeError(f"不认识的事件：{event!r}")
+
+
+def format_event(event: Event, names: Names) -> str:
+    """一行文字描述一个事件：回合数、名字、describe_event 的文字。names 见 Names。"""
+    side, slot = event_actor(event)
+    return f"T{event.turn:>4}  {_column(_name(names, side, slot))}{describe_event(event, names)}"
 
 
 def format_timeline(events: list[Event], names: Names, show_decisions: bool = False) -> str:
