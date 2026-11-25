@@ -32,6 +32,7 @@ class ChargedUse:
     move_id: str
     damage: int  # 被挡下时为 1
     shielded: bool
+    charge: float = 1.0  # 威力（蓄力比例）；只有手动对战里会小于 1
 
 
 @dataclass(frozen=True)
@@ -141,7 +142,8 @@ def _segment_side(
         energy_end=end[1],
         fast_moves=sum(1 for event in mine if not event.is_charged),
         charged=tuple(
-            ChargedUse(event.turn, event.move_id, event.damage, event.shielded) for event in mine if event.is_charged
+            ChargedUse(event.turn, event.move_id, event.damage, event.shielded, event.charge)
+            for event in mine if event.is_charged
         ),
         damage_dealt=sum(event.damage for event in mine),
         shields_used=sum(1 for event in moves if event.actor != side and event.shielded),
@@ -156,7 +158,8 @@ class LaneItem:
     """过程图上一方招式带里的一项。
 
     kind："fast"（快招，start_turn 到 end_turn）/ "cancelled"（排了队但作废的快招或大招）/
-    "charged"（大招）/ "switch"（换人，slot 是换上的那只）/ "faint"（倒下）。
+    "charged"（大招）/ "switch"（换人，slot 是换上的那只）/ "faint"（倒下）/
+    "wait"（这一回合什么都不做，只有手动对战里会有）。
     除了快招和作废的快招，start_turn 和 end_turn 相同。
     """
 
@@ -170,6 +173,7 @@ class LaneItem:
     target_slot: int | None = None  # 招式打的是对方的第几只
     from_slot: int | None = None  # 换人：换下去的那只
     switch_kind: str = ""  # 换人："switch" / "zero_turn" / "replacement"
+    charge: float = 1.0  # 大招的威力（蓄力比例）
 
 
 def lane_items(result: BattleResult, gm: GameMaster) -> tuple[list[LaneItem], list[LaneItem]]:
@@ -183,6 +187,8 @@ def lane_items(result: BattleResult, gm: GameMaster) -> tuple[list[LaneItem], li
         match event:
             case DecisionEvent(action="fast"):
                 fast_decided[event.actor] = event.turn
+            case DecisionEvent(action="wait"):
+                lanes[event.actor].append(LaneItem("wait", event.turn, event.turn, event.actor_slot))
             case MoveEvent(is_charged=False):
                 start = fast_decided.pop(event.actor, event.turn - gm.get_move(event.move_id).turns + 1)
                 lanes[event.actor].append(LaneItem(
@@ -192,7 +198,7 @@ def lane_items(result: BattleResult, gm: GameMaster) -> tuple[list[LaneItem], li
             case MoveEvent(is_charged=True):
                 lanes[event.actor].append(LaneItem(
                     "charged", event.turn, event.turn, event.actor_slot, event.move_id, event.damage,
-                    event.shielded, target_slot=event.target_slot,
+                    event.shielded, target_slot=event.target_slot, charge=event.charge,
                 ))
             case CancelledEvent():
                 start = event.turn

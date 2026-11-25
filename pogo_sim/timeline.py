@@ -20,7 +20,7 @@ class DecisionEvent:
     """一方做了决定（还没结算）。reason 来自策略。
 
     action："fast" / "charged" / "switch"（主动换人）/ "zero_turn_switch"（不花回合的换人）/
-    "stay"（有不花回合的换人机会，但不换）/ "replacement"（倒下后换谁）。
+    "stay"（有不花回合的换人机会，但不换）/ "replacement"（倒下后换谁）/ "wait"（这一回合什么都不做）。
     """
 
     turn: int
@@ -54,6 +54,7 @@ class MoveEvent:
     effects: tuple[EffectApplied, ...]
     actor_slot: int = 0
     target_slot: int = 0  # 挨打的是对方队伍里的第几只
+    charge: float = 1.0  # 大招的威力（蓄力比例）；模拟里都是 1，手动对战里玩家可以选
 
 
 @dataclass(frozen=True)
@@ -186,11 +187,14 @@ def describe_event(event: Event, names: Names) -> str:
                 return f"decides {event.action} -> {target}  ({event.reason})"
             if event.action == "stay":
                 return f"decides not to switch  ({event.reason})"
+            if event.action == "wait":
+                return f"decides to wait  ({event.reason})"
             return f"decides {event.action} {event.move_id}  ({event.reason})"
         case MoveEvent():
             kind = "CHARGED" if event.is_charged else "fast"
+            charge = f" at {event.charge:.0%}" if event.charge < 1 else ""
             line = (
-                f"{kind} {event.move_id} -> {event.damage} dmg"
+                f"{kind} {event.move_id}{charge} -> {event.damage} dmg"
                 f"{' (shielded)' if event.shielded else ''}"
                 f", {_name(names, 1 - event.actor, event.target_slot)} HP {event.defender_hp_after}"
                 f", energy {event.energy_after}"

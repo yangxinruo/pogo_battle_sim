@@ -4,7 +4,7 @@
 每个决定都要带一句原因，原因会原样写进时间线，方便看出输赢是哪些选择造成的。
 
 引擎会问策略四种问题（Policy）：
-1. decide_action：可以行动的回合，出快招、放大招，还是换人。
+1. decide_action：可以行动的回合，出快招、放大招、换人，还是什么都不做（手动对战里玩家才会选）。
 2. decide_shield：对手的大招打过来、自己队伍还有盾时，开不开盾。
 3. decide_zero_turn_switch：不花回合的换人机会（大招后的空回合等，见该方法的说明），换不换。
 4. choose_replacement：在场的倒下了，换谁上、选人时等几秒。
@@ -34,10 +34,14 @@ class ChargedAction:
     force_effect：这次大招的概率性能力变化是否触发。None 表示按规则（BattleRules.chance_effects）决定；
     只有剧本策略会指定 True / False（复现 PvPoke 某一场的实际结果时需要）。
     必定触发的效果（概率 100%）不受这个字段影响。
+
+    charge：威力（蓄力比例），BattleRules.min_charge 到 1。游戏里由蓄力小游戏决定；策略一律放满（1.0），
+    只有手动对战里玩家可以选（docs/mechanics.md 14.5）。对手开盾时看到的伤害仍按满蓄力算。
     """
 
     move_id: str
     force_effect: bool | None = None
+    charge: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -50,7 +54,16 @@ class SwitchAction:
     to: int
 
 
-Action = FastAction | ChargedAction | SwitchAction
+@dataclass(frozen=True)
+class WaitAction:
+    """这一回合什么都不做：不出招，能量不变，冷却保持 0，下一回合再决定。
+
+    游戏里不点屏幕就是这样；PvPoke 训练模式里没有排行动的回合也是什么都不发生。
+    策略一般不用，手动对战里玩家可以选（docs/mechanics.md 14.5）。
+    """
+
+
+Action = FastAction | ChargedAction | SwitchAction | WaitAction
 
 
 @dataclass(frozen=True)
@@ -118,7 +131,7 @@ class BattleView:
 
 class Policy(Protocol):
     def decide_action(self, view: BattleView) -> Decision:
-        """本回合可以行动时调用：返回快招、某个能量足够的大招，或者换人（view.can_switch 时）。"""
+        """本回合可以行动时调用：返回快招、某个能量足够的大招、换人（view.can_switch 时），或者等待。"""
         ...
 
     def decide_shield(self, view: BattleView, incoming: Move, damage: int) -> ShieldDecision:

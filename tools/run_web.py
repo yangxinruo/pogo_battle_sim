@@ -14,6 +14,7 @@
                                        （custom 可以写几次，是 data/custom/ 里的文件名）
     POST /api/build                    一只宝可梦按赛季规则建配置
     POST /api/team-battle              打一场 3v3
+    POST /api/manual-battle            手动对战：按玩家到现在的决定重打到下一个要玩家决定的地方
 配置写错时回 400 和 {"error": "中文说明"}；服务器里的意外错误回 500，详细信息打印在终端。
 """
 
@@ -48,6 +49,7 @@ GET_API: dict[str, Callable[[dict[str, list[str]]], Any]] = {
 POST_API: dict[str, Callable[[Any], Any]] = {
     "/api/build": web_api.build_member,
     "/api/team-battle": web_api.team_battle,
+    "/api/manual-battle": web_api.manual_battle,
 }
 
 

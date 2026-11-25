@@ -7,7 +7,7 @@
 0. 换人冷却减少：扣掉上一回合花的对战时间（含大招）。换人回合先让倒下的一方选人，
    再扣掉选人的等待（等待发生在换人回合之前）。
 1. 冷却减少：双方冷却各减 1 回合。
-2. 决定行动：冷却为 0 的一方问自己的策略（快招、大招或主动换人）。
+2. 决定行动：冷却为 0 的一方问自己的策略（快招、大招、主动换人，或者等待——这一回合什么都不做）。
    - 上一回合有大招结算时，本回合只能换人，而且不花回合（"大招后的空回合"，0 回合换人）。
    - 上一回合有在场的倒下时，本回合是"换人回合"：倒下的一方选人上场，存活的一方不出招
      （可以 0 回合换人，见 BattleRules.switch_during_opponent_replacement）。
@@ -35,7 +35,7 @@ from typing import Literal
 from pogo_sim.combatant import Combatant
 from pogo_sim.damage import calculate_damage
 from pogo_sim.gamemaster import Move
-from pogo_sim.policy import BattleView, ChargedAction, FastAction, Policy, Replacement, SwitchAction
+from pogo_sim.policy import BattleView, ChargedAction, FastAction, Policy, Replacement, SwitchAction, WaitAction
 from pogo_sim.rules import PVPOKE_COMPAT, BattleRules
 from pogo_sim.team import Team
 from pogo_sim.timeline import (
@@ -72,6 +72,7 @@ class _QueuedAction:
     priority: int
     move: Move | None = None  # 快招、大招
     force_effect: bool | None = None  # 大招
+    charge: float = 1.0  # 大招的威力（蓄力比例）
     switch_to: int | None = None  # 换人：换上第几只
     switch_kind: SwitchKind | None = None
     wait_ms: int = 0  # 倒下后换人：选人等了多久
@@ -324,6 +325,11 @@ class Battle:
                     raise ValueError(
                         f"第 {turn} 回合 {side.name} 的策略要放 {move.move_id}，但能量只有 {side.energy}"
                     )
+                if not self.rules.min_charge <= action.charge <= 1:
+                    raise ValueError(
+                        f"第 {turn} 回合 {side.name} 的 {move.move_id} 威力要在 "
+                        f"{self.rules.min_charge:.0%} 到 100% 之间，得到 {action.charge:.0%}"
+                    )
                 new_cooldowns[side.index] += 1
                 priority = CHARGED_PRIORITY
                 if side.cmp_attack(self.rules) > view.opponent.cmp_attack(self.rules):
@@ -331,7 +337,7 @@ class Battle:
                 self.queue.append(
                     _QueuedAction(
                         "charged", side.index, turn, side, team.active, priority,
-                        move=move, force_effect=action.force_effect,
+                        move=move, force_effect=action.force_effect, charge=action.charge,
                     )
                 )
                 self.events.append(
@@ -345,6 +351,9 @@ class Battle:
                         f"（换人冷却还剩 {team.switch_timer_ms} 毫秒，或后备都倒下了）"
                     )
                 self._queue_switch(view, action.to, "switch", decision.reason)
+            elif isinstance(action, WaitAction):
+                # 什么都不做：不排行动，冷却保持 0，下一回合再问。
+                self.events.append(DecisionEvent(turn, side.index, "wait", "", decision.reason, team.active))
             else:
                 raise TypeError(f"不认识的行动：{action!r}")
 
@@ -482,7 +491,7 @@ class Battle:
             self._use_fast_move(me, opponent, move, turn, action.user_slot, target_slot)
         else:
             self._use_charged_move(
-                me, opponent, move, action.force_effect, turn, clock, action.user_slot, target_slot
+                me, opponent, move, action.force_effect, turn, clock, action.user_slot, target_slot, action.charge
             )
 
     def _switch(self, action: _QueuedAction, turn: int) -> None:
@@ -553,8 +562,13 @@ class Battle:
         clock: _TurnClock,
         my_slot: int,
         target_slot: int,
+        charge: float = 1.0,
     ) -> None:
-        damage = calculate_damage(move, me.damage_side(), opponent.damage_side(), self.rules)
+        # 守方开盾时看不到攻方蓄了多少，所以问开盾时用满蓄力的伤害（用户 2026-11-24；PvPoke 的 AI 也这样）
+        full_damage = calculate_damage(move, me.damage_side(), opponent.damage_side(), self.rules)
+        damage = full_damage
+        if charge < 1:
+            damage = calculate_damage(move, me.damage_side(), opponent.damage_side(), self.rules, charge)
         me.energy -= move.energy_cost
 
         # 同回合的第二个大招额外计 10 秒（PvPoke 的计时方式，影响 240 秒时限和换人冷却）
@@ -566,7 +580,7 @@ class Battle:
         defender_team = self.teams[opponent.index]
         if defender_team.shields > 0 and "instant" not in move.tags:
             view = BattleView(turn, defender_team, self.teams[me.index], self.rules)
-            decision = self.policies[opponent.index].decide_shield(view, move, damage)
+            decision = self.policies[opponent.index].decide_shield(view, move, full_damage)
             shield_reason = decision.reason
             if decision.use_shield:
                 shielded = True
@@ -596,6 +610,7 @@ class Battle:
                 effects=effects,
                 actor_slot=my_slot,
                 target_slot=target_slot,
+                charge=charge,
             )
         )
 

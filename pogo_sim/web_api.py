@@ -8,16 +8,21 @@ tools/run_web.py 把这些函数转发成 HTTP 接口。
 - species_catalog(custom_files)：全部宝可梦（名字、属性、招式池）和招式
 - build_member(raw)：一只宝可梦按赛季规则建配置（CP、等级、IV、说明）
 - team_battle(raw)：打一场 3v3，返回结果、每只的情况、换人和开盾、逐回合时间线、Markdown 报告
+- manual_battle(raw)：手动对战，玩家操作一队；重打到下一个要玩家决定的地方，返回局面和能选什么（4c）
 
 网页发来的配置和 3v3 配置文件（team_battle.py 开头）写法一样、键也一样，只有一处不同：
 覆盖文件只能从 data/custom/ 里选，写文件名（例如 "mega_froslass.toml"），不能写任意路径。
 写错时抛出 ConfigError，信息和配置文件写错时一样，开头是"网页"。
 """
 
+import json
+from collections.abc import Sequence
 from dataclasses import asdict
+from functools import lru_cache
+from math import ceil
 from typing import Any, get_args, get_type_hints
 
-from pogo_sim.battle import BattleResult
+from pogo_sim.battle import Battle, BattleResult
 from pogo_sim.battle_summary import lane_items
 from pogo_sim.combatant import make_combatant
 from pogo_sim.config import (
@@ -30,7 +35,19 @@ from pogo_sim.config import (
     parse_entry,
     prepare_entry,
 )
+from pogo_sim.combatant import Combatant
+from pogo_sim.damage import calculate_damage
 from pogo_sim.gamemaster import GameMaster, Move, load_gamemaster
+from pogo_sim.manual import (
+    QUESTION_NAMES,
+    ManualDecision,
+    ManualError,
+    ManualGame,
+    format_manual_report,
+    parse_decisions,
+    play_manual,
+)
+from pogo_sim.rules import BattleRules
 from pogo_sim.rankings import load_rankings
 from pogo_sim.rules import PVPOKE_COMPAT
 from pogo_sim.season import LEAGUE_NAMES, SEASON_PRESETS, league_name
@@ -279,7 +296,7 @@ def team_battle(raw: Any) -> dict[str, Any]:
     return battle_payload(battle, run_team_battle(battle))
 
 
-def battle_payload(battle: TeamBattle, result: BattleResult) -> dict[str, Any]:
+def battle_payload(battle: TeamBattle, result: BattleResult, report_markdown: str | None = None) -> dict[str, Any]:
     """一场打完以后网页要显示的东西。数字和文字都来自引擎和报告用的同一批函数。
 
     - teams：两队每只的配置（_member_info）；names 是时间线里用的名字（镜像时带队名）
@@ -289,7 +306,7 @@ def battle_payload(battle: TeamBattle, result: BattleResult) -> dict[str, Any]:
     - switches、charged：换人和大招，带策略给的原因
     - segments：对位分段（segments_payload）；chart：过程图的数据（chart_payload）
     - timeline：逐回合的事件和回合末的状态（timeline_payload）
-    - report_markdown：和命令行一样的完整报告
+    - report_markdown：和命令行一样的完整报告（手动对战时传入手动对战的报告）
     """
     config = battle.config
     names = timeline_names(battle)
@@ -327,7 +344,7 @@ def battle_payload(battle: TeamBattle, result: BattleResult) -> dict[str, Any]:
         "segments": segments_payload(battle, result),
         "chart": chart_payload(battle, result),
         "timeline": timeline_payload(result, names),
-        "report_markdown": format_team_battle_report(battle, result),
+        "report_markdown": report_markdown if report_markdown is not None else format_team_battle_report(battle, result),
     }
 
 
@@ -405,3 +422,197 @@ def timeline_payload(result: BattleResult, names: Names) -> list[dict[str, Any]]
         }
         for turn in sorted(events.keys() | snapshots.keys())
     ]
+
+
+# ---- 手动对战（4c） ----
+
+
+@lru_cache(maxsize=8)
+def _prepare_from_key(key: str) -> TeamBattle:
+    return prepare_team_battle(parse_team_battle_config(json.loads(key)["config"], WHERE))
+
+
+def prepared_battle(raw: Any) -> TeamBattle:
+    """检查配置并按赛季规则建好两队。手动对战每做一个决定都要重打，同一个配置只建一次（建配置比打一场慢得多）。
+
+    缓存的键是配置本身和选中的覆盖文件的修改时间，所以改了覆盖文件会重新建。
+    """
+    converted = _with_custom_paths(raw)
+    mtimes = [(REPO_ROOT / path).stat().st_mtime_ns for path in converted["custom_files"]]
+    try:
+        key = json.dumps({"config": converted, "mtimes": mtimes}, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError) as e:
+        raise ConfigError(f"{WHERE}：配置里有不能转成 JSON 的值（{e}）") from e
+    return _prepare_from_key(key)
+
+
+def manual_battle(raw: Any) -> dict[str, Any]:
+    """手动对战：玩家操作第 side 方，按 decisions 从第 1 回合重打到下一个要玩家决定的地方（pogo_sim/manual.py）。
+
+    raw：{"config": 和 team_battle 一样的配置, "side": 0 或 1, "decisions": [玩家到现在的决定]}。
+    返回：
+    - 停下来时 {"status": "decide", ...}，内容见 manual_question_payload；
+    - 打完时 {"status": "finished", "result": battle_payload}（含对方每个决定的原因、过程图、报告）。
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{WHERE}：要写成表（键值对），得到 {type(raw).__name__}")
+    check_unknown_keys(raw, {"config", "side", "decisions"}, WHERE)
+    for key in ("config", "side"):
+        if key not in raw:
+            raise ConfigError(f"{WHERE}：缺少 {key}")
+    side = raw["side"]
+    if side not in (0, 1) or isinstance(side, bool):
+        raise ConfigError(f"{WHERE}：side（玩家操作哪一方）要是 0 或 1，得到 {side!r}")
+    battle = prepared_battle(raw["config"])
+    try:
+        decisions = parse_decisions(raw.get("decisions", []))
+        game = play_manual(battle, side, decisions)
+    except ManualError as e:
+        raise ConfigError(f"{WHERE}：{e}") from e
+
+    if game.result is not None:
+        payload = battle_payload(battle, game.result, format_manual_report(battle, game.result, side))
+        payload["teams"][side]["policy"] = "玩家手动操作"
+        return {"status": "finished", "side": side, "decisions": len(decisions), "result": payload}
+    return {"status": "decide", "side": side, **manual_question_payload(battle, game, side)}
+
+
+def _option_label(option: ManualDecision, names: Sequence[str], me: Combatant) -> str:
+    """一个选项在网页按钮上的文字。"""
+    if option.kind == "shield":
+        return "开盾" if option.shield else "不开盾"
+    if option.to is not None:
+        return f"换上 {names[option.to]}"
+    if option.kind == "zero_turn_switch":
+        return "不换"
+    if option.action == "fast":
+        return f"快招 {me.fast_move.name}"
+    if option.action == "charged":
+        move = next(m for m in me.charged_moves if m.move_id == option.move_id)
+        return f"大招 {move.name}（{move.energy_cost} 能量）"
+    return "什么都不做"
+
+
+def fast_moves_needed(energy: int, cost: int, gain: int) -> int | None:
+    """还差几次快招才够放这个大招（够了是 0；快招不给能量时为 None）。"""
+    if energy >= cost:
+        return 0
+    if gain <= 0:
+        return None
+    return ceil((cost - energy) / gain)
+
+
+def _side_state(
+    battle: Battle, side: int, team_name: str, names: Sequence[str], hidden_energy: int | None = None
+) -> dict[str, Any]:
+    """一方现在的状态：盾、换人冷却、在场的是谁，每只的 HP、能量、能力等级、招式（每个大招够不够、还差几次快招）。
+
+    hidden_energy：开盾的问题里，对方在场那只显示这一回合开始时的能量（见 manual_question_payload）。
+    """
+    team = battle.teams[side]
+    members = []
+    for slot, member in enumerate(team.members):
+        energy = hidden_energy if hidden_energy is not None and slot == team.active else member.energy
+        gain = member.fast_move.energy_gain
+        members.append({
+            "slot": slot,
+            "name": names[slot],
+            "types": list(member.species.types),
+            "hp": member.hp,
+            "max_hp": member.stats.hp,
+            "energy": energy,
+            "fainted": member.is_fainted,
+            "atk_stage": member.atk_stage,
+            "def_stage": member.def_stage,
+            "fast": {**_move_info(member.fast_move), "id": member.fast_move.move_id},
+            "charged": [
+                {
+                    **_move_info(move),
+                    "id": move.move_id,
+                    "ready": energy >= move.energy_cost,
+                    "fast_needed": fast_moves_needed(energy, move.energy_cost, gain),
+                }
+                for move in member.charged_moves
+            ],
+        })
+    return {
+        "name": team_name,
+        "active": team.active,
+        "shields": team.shields,
+        "switch_timer_ms": team.switch_timer_ms,
+        "members": members,
+    }
+
+
+def damage_preview(me: Combatant, opponent: Combatant, rules: BattleRules) -> dict[str, Any]:
+    """出招时的伤害参考（双方在场的两只，按现在的能力等级；不开盾时）。
+
+    - my_charged[招式]：威力从 min_charge 到 100%（percents，每 1%）各打多少（damage），
+      打死至少要几 %（ko_min，打不死为 None），不打死最多几 %（survive_max，怎么都打死为 None）
+    - my_fast、their_fast：双方快招一次打多少；their_charged：对方每个大招满蓄力打多少
+    网页的拖动条只是查这张表，伤害都是引擎同一个函数算的（damage.calculate_damage）。
+    """
+    percents = list(range(ceil(rules.min_charge * 100), 101))
+    mine = {}
+    for move in me.charged_moves:
+        damages = [calculate_damage(move, me.damage_side(), opponent.damage_side(), rules, p / 100) for p in percents]
+        ko = [p for p, d in zip(percents, damages) if d >= opponent.hp]
+        alive = [p for p, d in zip(percents, damages) if d < opponent.hp]
+        mine[move.move_id] = {
+            "damage": damages,
+            "ko_min": ko[0] if ko else None,
+            "survive_max": alive[-1] if alive else None,
+        }
+    return {
+        "percents": percents,
+        "target_hp": opponent.hp,
+        "my_charged": mine,
+        "my_fast": calculate_damage(me.fast_move, me.damage_side(), opponent.damage_side(), rules),
+        "their_fast": calculate_damage(opponent.fast_move, opponent.damage_side(), me.damage_side(), rules),
+        "their_charged": {
+            move.move_id: calculate_damage(move, opponent.damage_side(), me.damage_side(), rules)
+            for move in opponent.charged_moves
+        },
+    }
+
+
+def manual_question_payload(team_battle: TeamBattle, game: ManualGame, side: int) -> dict[str, Any]:
+    """对战停下来问玩家时，网页要显示的东西：
+
+    - question：第几个决定、第几回合、问的是什么（kind、kind_text）、能选什么（options，每个带按钮文字 label）
+    - sides：双方现在的状态（_side_state）；turn、elapsed_ms
+    - damage：出招的问题里，伤害参考（damage_preview）
+    - events：到现在为止结算过的事件（不含双方的决定和原因：对方的打算不能提前看到，打完以后再看）
+
+    开盾的问题里，对方的大招还没结算，不告诉玩家是哪一招；对方在场那只的能量显示这一回合开始时的值
+    （它的能量已经扣掉了大招的能量，看了就知道是哪一招）。
+    """
+    battle = game.battle
+    question = game.question
+    assert question is not None and game.view is not None
+    names = timeline_names(team_battle)
+    hidden_energy = None
+    if question.kind == "shield":
+        opponent = battle.teams[1 - side]
+        hidden_energy = battle.snapshots[-1].sides[1 - side].member_energy[opponent.active] if battle.snapshots else 0
+    sides = [
+        _side_state(battle, s, team_battle.teams[s].setup.name, names[s], hidden_energy if s == 1 - side else None)
+        for s in (0, 1)
+    ]
+    me = battle.teams[side].active_member
+    opponent_active = battle.teams[1 - side].active_member
+    return {
+        "question": {
+            "index": question.index,
+            "turn": question.turn,
+            "kind": question.kind,
+            "kind_text": QUESTION_NAMES[question.kind],
+            "options": [asdict(o) | {"label": _option_label(o, names[side], me)} for o in question.options],
+        },
+        "turn": question.turn,
+        "elapsed_ms": battle.elapsed_ms,
+        "min_charge": battle.rules.min_charge,
+        "sides": sides,
+        "damage": damage_preview(me, opponent_active, battle.rules) if question.kind == "action" else None,
+        "events": [event_payload(e, names) for e in battle.events if not isinstance(e, DecisionEvent)],
+    }

@@ -119,3 +119,13 @@ def test_bad_requests(base_url):
 
     status, _, body = request(f"{base_url}/api/nope")
     assert status == 404 and "GET /api/nope" in json.loads(body)["error"]
+
+
+def test_manual_battle(base_url):
+    status, data = post_json(f"{base_url}/api/manual-battle", {"config": web_api.example_config(), "side": 0, "decisions": []})
+    assert status == 200 and data["status"] == "decide" and data["question"]["turn"] == 1
+    status, data = post_json(
+        f"{base_url}/api/manual-battle",
+        {"config": web_api.example_config(), "side": 0, "decisions": [{"kind": "shield", "shield": True}]},
+    )
+    assert status == 400 and "这里要回答的是出招" in data["error"]

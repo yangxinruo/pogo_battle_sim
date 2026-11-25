@@ -11,14 +11,17 @@ from dataclasses import asdict
 import pytest
 
 from pogo_sim import web_api
-from pogo_sim.config import REPO_ROOT, ConfigError, load_toml, parse_entry, prepare_entry
-from pogo_sim.gamemaster import load_gamemaster
-from pogo_sim.season import PVPOKE_SEASON, SEASON_PRESETS
 from pogo_sim.battle_summary import lane_items
+from pogo_sim.config import REPO_ROOT, ConfigError, load_toml, parse_entry, prepare_entry
+from pogo_sim.damage import calculate_damage
+from pogo_sim.gamemaster import load_gamemaster
+from pogo_sim.manual import parse_decisions, play_manual
+from pogo_sim.season import PVPOKE_SEASON, SEASON_PRESETS
 from pogo_sim.team_battle import (
     SWITCH_KINDS,
     format_team_battle_report,
     load_team_battle_config,
+    make_teams,
     max_hps,
     member_summaries,
     parse_team_battle_config,
@@ -28,6 +31,7 @@ from pogo_sim.team_battle import (
     timeline_names,
 )
 from pogo_sim.timeline import MoveEvent, SwitchEvent, describe_event, event_actor, format_event
+from tests.test_manual import _auto_choices
 
 EXAMPLE = REPO_ROOT / "experiments" / "gl_3v3_example.toml"
 
@@ -364,3 +368,118 @@ def test_timeline_has_elapsed_time(payload, engine_battle):
     _, result = engine_battle
     by_turn = {entry["turn"]: entry for entry in payload["timeline"]}
     assert by_turn[result.turns]["elapsed_ms"] == result.elapsed_ms
+
+
+# ---- 手动对战（4c） ----
+
+
+def _manual(decisions, side=0):
+    return web_api.manual_battle({"config": web_api.example_config(), "side": side, "decisions": decisions})
+
+
+def _auto_decisions(side=0):
+    """自动对战里 TeamPolicy 的每个选择，写成网页发来的样子。"""
+    battle = prepare_team_battle(load_team_battle_config(EXAMPLE))
+    return [asdict(d) for d in _auto_choices(run_team_battle(battle), side)]
+
+
+def test_manual_first_question():
+    data = json.loads(json.dumps(_manual([])))
+    assert data["status"] == "decide" and data["side"] == 0
+    question = data["question"]
+    assert (question["index"], question["turn"], question["kind"], question["kind_text"]) == (0, 1, "action", "出招")
+    assert [o["label"] for o in question["options"]] == ["快招 Bubble", "什么都不做", "换上 Medicham", "换上 Registeel"]
+    assert data["events"] == []
+    me, them = data["sides"]
+    assert (me["name"], me["active"], me["shields"]) == ("Team A", 0, 2)
+    azumarill = me["members"][0]
+    assert (azumarill["hp"], azumarill["max_hp"], azumarill["energy"]) == (196, 196, 0)
+    ice_beam = next(c for c in azumarill["charged"] if c["id"] == "ICE_BEAM")
+    assert (ice_beam["energy"], ice_beam["ready"], ice_beam["fast_needed"]) == (55, False, 5)  # Bubble 每次 +11
+    hydro = next(c for c in them["members"][0]["charged"] if c["id"] == "HYDRO_CANNON")
+    assert (hydro["energy"], hydro["fast_needed"]) == (40, 5)  # Mud Shot 每次 +9
+
+
+def test_manual_damage_preview():
+    damage = _manual([])["damage"]
+    assert damage["percents"] == list(range(25, 101))
+    assert damage["target_hp"] == 139
+    ice_beam = damage["my_charged"]["ICE_BEAM"]
+    assert len(ice_beam["damage"]) == 76
+    assert ice_beam["damage"] == sorted(ice_beam["damage"])
+    # 满 HP 的 Swampert 一个 Ice Beam 打不死
+    assert ice_beam["ko_min"] is None and ice_beam["survive_max"] == 100
+    assert damage["their_charged"]["HYDRO_CANNON"] == 35
+
+
+def test_manual_damage_preview_ko_threshold():
+    gm = load_gamemaster()
+    battle = prepare_team_battle(load_team_battle_config(EXAMPLE))
+    a, b = make_teams(battle)
+    me, them = a.members[0], b.members[0]
+    them.hp = 40
+    preview = web_api.damage_preview(me, them, battle.config.rules)
+    play_rough = preview["my_charged"]["PLAY_ROUGH"]
+    ko, alive = play_rough["ko_min"], play_rough["survive_max"]
+    assert ko == alive + 1
+    move = gm.get_move("PLAY_ROUGH")
+    assert calculate_damage(move, me.damage_side(), them.damage_side(), battle.config.rules, ko / 100) >= 40
+    assert calculate_damage(move, me.damage_side(), them.damage_side(), battle.config.rules, alive / 100) < 40
+
+
+def test_manual_events_hide_decisions_and_reasons():
+    decisions = _auto_decisions()[:12]
+    data = _manual(decisions)
+    assert data["question"]["index"] == 12
+    assert data["events"]
+    assert all(e["type"] != "decision" for e in data["events"])
+
+
+def test_manual_shield_question_hides_the_move():
+    decisions = _auto_decisions()
+    first_shield = next(i for i, d in enumerate(decisions) if d["kind"] == "shield")
+    data = _manual(decisions[:first_shield])
+    assert data["question"]["kind"] == "shield"
+    assert [o["label"] for o in data["question"]["options"]] == ["开盾", "不开盾"]
+    assert data["damage"] is None
+    assert not any(e["data"].get("is_charged") for e in data["events"])
+    # 对方在场那只的能量显示这一回合开始时的值（已经扣掉大招能量的值会透露是哪一招）
+    battle = prepare_team_battle(load_team_battle_config(EXAMPLE))
+    game = play_manual(battle, 0, parse_decisions(decisions[:first_shield]))
+    before_turn = game.battle.snapshots[-1].sides[1].member_energy[0]
+    live = game.battle.teams[1].members[0].energy
+    assert live == before_turn - 40  # Hydro Cannon 的能量已经扣掉了
+    assert data["sides"][1]["members"][0]["energy"] == before_turn
+
+
+def test_manual_finished():
+    decisions = _auto_decisions(side=1)
+    data = json.loads(json.dumps(_manual(decisions, side=1)))
+    assert data["status"] == "finished" and data["decisions"] == len(decisions)
+    result = data["result"]
+    assert (result["result"]["winner"], result["result"]["ratings"]) == (1, [221, 778])  # 和自动对战那一场相同
+    assert result["teams"][1]["policy"] == "玩家手动操作"
+    assert "Team B 由玩家手动操作" in result["report_markdown"]
+    assert result["chart"]["turns"] == 100
+
+
+def test_manual_errors():
+    with pytest.raises(ConfigError, match="网页：side"):
+        web_api.manual_battle({"config": web_api.example_config(), "side": 2})
+    with pytest.raises(ConfigError, match="网页：缺少 config"):
+        web_api.manual_battle({"side": 0})
+    with pytest.raises(ConfigError, match="网页：第 1 个决定（第 1 回合，出招）：这里要回答的是出招"):
+        _manual([{"kind": "shield", "shield": True}])
+    with pytest.raises(ConfigError, match="网页：decisions 要写成列表"):
+        web_api.manual_battle({"config": web_api.example_config(), "side": 0, "decisions": {}})
+    with pytest.raises(ConfigError, match="不认识的字段 extra"):
+        web_api.manual_battle({"config": web_api.example_config(), "side": 0, "extra": 1})
+
+
+def test_prepared_battle_is_cached():
+    a = web_api.prepared_battle(web_api.example_config())
+    b = web_api.prepared_battle(web_api.example_config())
+    assert a is b
+    other = web_api.example_config()
+    other["team"][0]["shields"] = 1
+    assert web_api.prepared_battle(other) is not a

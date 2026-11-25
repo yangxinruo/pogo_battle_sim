@@ -45,6 +45,12 @@ class BattleRules:
     max_shields: int = 2
     shielded_damage: int = 1  # 被盾挡下的大招造成的伤害
 
+    # 大招威力（蓄力比例）的下限（docs/mechanics.md 14.5）。游戏里由蓄力小游戏决定；模拟里一律满蓄力（1.0），
+    # 手动对战里玩家可以在 min_charge 到 1 之间选。对手开盾时看到的伤害按满蓄力算（看不到蓄了多少）。
+    # 来源：PvPoke 训练模式 BattleInterface.js 第 213 行，倍率 = min(0.25 + 0.75 × 蓄力进度, 1)。
+    # 状态：参考 PvPoke（用户实战也觉得有最小值，2026-11-24）。
+    min_charge: float = 0.25
+
     # ---- 时间（docs/mechanics.md 5.1、6.5）----
     # 引擎以回合为单位（1 回合 = 0.5 秒）。下面两项只用于判断 240 秒时限。
     # PvPoke 把每次大招折算成 10 秒（大招小游戏的时长）计入对战时间，同回合的第二个大招再加 10 秒。

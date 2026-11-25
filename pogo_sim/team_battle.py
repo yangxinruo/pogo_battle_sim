@@ -464,9 +464,14 @@ def segment_end_text(battle: TeamBattle, result: BattleResult, segment: Segment,
 
 
 def charged_use_text(segment_side: SegmentSide) -> str:
-    """一段里放的大招，例如"ICE_BEAM 挡下、PLAY_ROUGH 51"（被挡下写"挡下"，否则是伤害）。"""
+    """一段里放的大招，例如"ICE_BEAM 挡下、PLAY_ROUGH 51"（被挡下写"挡下"，否则是伤害）。
+
+    没放满的（只有手动对战里会有）后面写威力，例如"PLAY_ROUGH 30（威力 60%）"。
+    """
     return "、".join(
-        f"{use.move_id} {'挡下' if use.shielded else use.damage}" for use in segment_side.charged
+        f"{use.move_id} {'挡下' if use.shielded else use.damage}"
+        + (f"（威力 {use.charge:.0%}）" if use.charge < 1 else "")
+        for use in segment_side.charged
     )
 
 
