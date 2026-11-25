@@ -52,6 +52,17 @@ TeamPolicy 选人、换人看的就是这种评分：行上那只对列上那只
 | Medicham | 493 | 379 | 198 |
 | Registeel | 269 | 689 | 334 |
 
+## 对位分段
+
+在场的两只不变的一段时间算一段，任一方换人就开始新的一段（docs/mechanics.md 14.4）。HP 和能量是这一段开始之前 → 最后一回合结束时；大招后面是伤害，"挡下"是被对方开盾挡下；开盾是挡下对方大招的次数。
+
+| 回合 | Team A | Team B | 怎么结束 |
+|---|---|---|---|
+| 1–30 | Azumarill：HP 196 → 155，能量 0 → 44；快招 9 次；大招 ICE_BEAM 挡下；开盾 2 次 | Swampert：HP 139 → 84，能量 0 → 37；快招 13 次；大招 HYDRO_CANNON 挡下、HYDRO_CANNON 挡下；开盾 1 次 | Team B 0 回合换人 |
+| 31–55 | Azumarill：HP 155 → 0，能量 44 → 55；快招 6 次；大招 ICE_BEAM 挡下 | Trevenant：HP 133 → 108，能量 0 → 0；快招 10 次；大招 SEED_BOMB 64、SEED_BOMB 64；开盾 1 次 | Azumarill 倒下 |
+| 56–86 | Registeel：HP 132 → 0，能量 0 → 50；快招 26 次；大招 ZAP_CANNON 55 | Trevenant：HP 108 → 27，能量 0 → 4；快招 13 次；大招 SHADOW_BALL 46、SHADOW_BALL 46 | Registeel 倒下 |
+| 87–100 | Medicham：HP 142 → 0，能量 0 → 36；快招 6 次 | Trevenant：HP 27 → 9，能量 4 → 2；快招 6 次；大招 SHADOW_BALL 101 | Medicham 倒下 |
+
 ## 换人
 
 | 回合 | 队伍 | 换人 | 类型 | 原因 |

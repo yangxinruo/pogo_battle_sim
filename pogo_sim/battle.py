@@ -270,7 +270,9 @@ class Battle:
                 team.active_member.cooldown = 1
         self._record_faints(turn)
         self._prepare_replacement(turn)
-        self.snapshots.append(TurnSnapshot(turn, (_snapshot(self.teams[0]), _snapshot(self.teams[1]))))
+        self.snapshots.append(
+            TurnSnapshot(turn, (_snapshot(self.teams[0]), _snapshot(self.teams[1])), self.elapsed_ms)
+        )
         self.turn += 1
 
     # ---- 第 2 步：决定行动 ----

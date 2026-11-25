@@ -129,3 +129,46 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 .ev.switch { color: #7c3aed; }
 .ev.cancelled { color: var(--muted); text-decoration: line-through; }
 .state-line { white-space: nowrap; }
+
+/* ---- 战斗过程图和对位分段（4b） ---- */
+
+.chart-legend { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 6px; }
+.legend-item { margin-right: 10px; white-space: nowrap; }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin: 0 4px -1px 6px; }
+.chart-holder { overflow-x: auto; }
+svg.chart { display: block; font-size: 11px; }
+.lane-bg.lane-0 { fill: var(--side-0-light); }
+.lane-bg.lane-1 { fill: var(--side-1-light); }
+.hp-bg { fill: #fafafa; stroke: var(--border); }
+.axis-label { font-size: 12px; font-weight: 600; }
+.axis-label.side-0 { fill: var(--side-0); }
+.axis-label.side-1 { fill: var(--side-1); }
+.axis-small { fill: var(--muted); font-size: 10px; }
+.grid { stroke: #e5e7eb; stroke-width: 1; }
+.cancelled { fill: none; stroke-dasharray: 2 2; }
+.charged-label { font-size: 10px; font-weight: 600; }
+.switch-line { stroke: #7c3aed; stroke-width: 1.5; stroke-dasharray: 4 2; }
+.switch-label { fill: #7c3aed; font-size: 10px; }
+.faint-mark { fill: var(--bad); font-size: 13px; font-weight: 700; }
+.hp-active { fill: none; stroke-width: 2.5; }
+.hp-bench { fill: none; stroke-width: 1; opacity: 0.35; }
+.energy-line { fill: none; stroke-width: 1; stroke-dasharray: 3 2; opacity: 0.5; }
+.hover-column { fill: rgba(17, 24, 39, 0.08); pointer-events: none; }
+.segment-band { fill: rgba(250, 204, 21, 0.18); pointer-events: none; }
+.chart-overlay { cursor: pointer; }
+.chart-tooltip {
+  position: fixed;
+  z-index: 10;
+  max-width: 440px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 8px 10px;
+  font-size: 12px;
+  pointer-events: none;
+}
+.tip-title { font-weight: 600; margin-bottom: 4px; }
+.tip-state { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 4px; }
+.segment-row:hover td { background: #fefce8; }
+tr.flash td { background: #fde68a !important; transition: background 0.3s; }

@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from pogo_sim.battle import Battle, BattleResult
+from pogo_sim.battle_summary import Segment, SegmentSide, battle_segments
 from pogo_sim.combatant import make_combatant
 from pogo_sim.config import (
     ConfigError,
@@ -437,6 +438,38 @@ def member_summaries(battle: TeamBattle, result: BattleResult) -> list[MemberSum
     return summaries
 
 
+def max_hps(battle: TeamBattle) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """两队每只的最大 HP（按队伍顺序）。"""
+    hps = tuple(
+        tuple(make_combatant(battle.gm, p.build, side).stats.hp for p in team.members)
+        for side, team in enumerate(battle.teams)
+    )
+    return hps[0], hps[1]
+
+
+# ---- 对位分段（battle_summary.py） ----
+
+
+def segments(battle: TeamBattle, result: BattleResult) -> list[Segment]:
+    return battle_segments(result, max_hps(battle))
+
+
+def segment_end_text(battle: TeamBattle, result: BattleResult, segment: Segment, last: bool) -> str:
+    """这一段是怎么结束的，例如"Azumarill 倒下"、"Team B 0 回合换人"。报告和网页共用。"""
+    parts = [f"{battle.teams[side].names[segment.sides[side].slot]} 倒下" for side in segment.fainted]
+    parts += [f"{battle.teams[side].setup.name} {SWITCH_KINDS[kind]}" for side, kind in segment.switched]
+    if not parts and last:
+        parts.append("时间到" if result.timed_out else "对战结束")
+    return "；".join(parts)
+
+
+def charged_use_text(segment_side: SegmentSide) -> str:
+    """一段里放的大招，例如"ICE_BEAM 挡下、PLAY_ROUGH 51"（被挡下写"挡下"，否则是伤害）。"""
+    return "、".join(
+        f"{use.move_id} {'挡下' if use.shielded else use.damage}" for use in segment_side.charged
+    )
+
+
 # ---- 报告（Markdown） ----
 
 
@@ -615,6 +648,32 @@ def _format_charged(battle: TeamBattle, result: BattleResult) -> str:
     return format_table(["回合", "出招", "大招", "挨打", "结果", "开不开盾的原因"], rows)
 
 
+def _segment_cell(name: str, side: SegmentSide) -> str:
+    parts = [
+        f"{name}：HP {side.hp_start} → {side.hp_end}，能量 {side.energy_start} → {side.energy_end}",
+        f"快招 {side.fast_moves} 次",
+    ]
+    if side.charged:
+        parts.append(f"大招 {charged_use_text(side)}")
+    if side.shields_used:
+        parts.append(f"开盾 {side.shields_used} 次")
+    return "；".join(parts)
+
+
+def _format_segments(battle: TeamBattle, result: BattleResult) -> str:
+    all_segments = segments(battle, result)
+    rows = []
+    for i, segment in enumerate(all_segments):
+        turns = f"{segment.start_turn}–{segment.end_turn}" if segment.end_turn != segment.start_turn else str(segment.start_turn)
+        rows.append([
+            turns,
+            *(_segment_cell(battle.teams[side].names[segment.sides[side].slot], segment.sides[side]) for side in (0, 1)),
+            segment_end_text(battle, result, segment, last=i == len(all_segments) - 1),
+        ])
+    header = ["回合", battle.teams[0].setup.name, battle.teams[1].setup.name, "怎么结束"]
+    return format_table(header, rows)
+
+
 def format_team_battle_report(
     battle: TeamBattle,
     result: BattleResult,
@@ -689,6 +748,14 @@ def format_battle_details(battle: TeamBattle, result: BattleResult, include_time
     for opening in openings:
         lines += ["", _format_opening(battle, opening)]
     lines.append("")
+
+    lines += ["## 对位分段", ""]
+    lines.append(
+        "在场的两只不变的一段时间算一段，任一方换人就开始新的一段（docs/mechanics.md 14.4）。"
+        "HP 和能量是这一段开始之前 → 最后一回合结束时；大招后面是伤害，\"挡下\"是被对方开盾挡下；"
+        "开盾是挡下对方大招的次数。"
+    )
+    lines += ["", _format_segments(battle, result), ""]
 
     lines += ["## 换人", "", _format_switches(battle, result), ""]
     lines += ["## 大招和开盾", "", _format_charged(battle, result), ""]

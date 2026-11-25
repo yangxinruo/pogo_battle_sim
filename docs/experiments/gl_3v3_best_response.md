@@ -72,6 +72,19 @@ TeamPolicy 选人、换人看的就是这种评分：行上那只对列上那只
 | Medicham | 493 | 379 | 198 |
 | Registeel | 269 | 689 | 334 |
 
+## 对位分段
+
+在场的两只不变的一段时间算一段，任一方换人就开始新的一段（docs/mechanics.md 14.4）。HP 和能量是这一段开始之前 → 最后一回合结束时；大招后面是伤害，"挡下"是被对方开盾挡下；开盾是挡下对方大招的次数。
+
+| 回合 | Team A | Team B | 怎么结束 |
+|---|---|---|---|
+| 1–43 | Medicham：HP 142 → 0，能量 0 → 28；快招 18 次；大招 ICE_PUNCH 挡下、ICE_PUNCH 挡下；开盾 2 次 | Swampert：HP 139 → 11，能量 0 → 2；快招 18 次；大招 HYDRO_CANNON 54、HYDRO_CANNON 挡下、HYDRO_CANNON 挡下、HYDRO_CANNON 54；开盾 2 次 | Medicham 倒下 |
+| 44–50 | Azumarill：HP 196 → 187，能量 0 → 22；快招 2 次 | Swampert：HP 11 → 0，能量 2 → 29；快招 3 次 | Swampert 倒下 |
+| 51–61 | Azumarill：HP 187 → 162，能量 22 → 0；快招 3 次；大招 ICE_BEAM 81 | Trevenant：HP 133 → 40，能量 0 → 40；快招 5 次 | Team A 0 回合换人 |
+| 62–79 | Registeel：HP 132 → 40，能量 0 → 0；快招 15 次；大招 FOCUS_BLAST 34 | Trevenant：HP 40 → 0，能量 40 → 6；快招 7 次；大招 SHADOW_BALL 46、SEED_BOMB 18 | Trevenant 倒下 |
+| 80–98 | Registeel：HP 40 → 4，能量 0 → 0；快招 16 次；大招 ZAP_CANNON 60 | Altaria：HP 141 → 65，能量 0 → 14；快招 16 次；大招 SKY_ATTACK 20 | Team A 0 回合换人 |
+| 99–116 | Azumarill：HP 162 → 104，能量 0 → 0；快招 5 次；大招 ICE_BEAM 89 | Altaria：HP 65 → 0，能量 14 → 20；快招 14 次；大招 SKY_ATTACK 44 | Altaria 倒下 |
+
 ## 换人
 
 | 回合 | 队伍 | 换人 | 类型 | 原因 |

@@ -119,6 +119,7 @@ class TurnSnapshot:
 
     turn: int
     sides: tuple[SideSnapshot, SideSnapshot]
+    elapsed_ms: int = 0  # 这一回合结束时的对战时间（同 BattleResult.elapsed_ms 的口径）
 
 
 # 双方的名字：1v1 时每方一个字符串；3v3 时每方是队伍成员的名字（按 Team.members 的顺序）。

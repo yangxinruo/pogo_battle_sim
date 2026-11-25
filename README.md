@@ -2,7 +2,7 @@
 
 一个透明、可调的 Pokémon GO PvP 模拟器。目标是让 3v3 的过程和策略假设都看得见，并支持加入未发布的宝可梦（如新 Mega）。
 
-当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成。第 3 步（3v3）拆成的几个单元都已完成，拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节：3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）、3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）、3v3-e（3v3 配置文件与报告，含队伍检查）、3v3-f1（PvPoke 排名快照；1v1 对环境前 N 的批量九宫格，Mega 和非 Mega 分开取）、3v3-f2（队伍对队伍：我方的队伍对手写的和从环境前 N 随机抽的很多队各打一场 3v3）和 3v3-g（对固定对手策略的应对：对手的 TeamPolicy 不变，逐步试探我方更好的打法）。第 4 步（网页界面）进行中：4a（本地服务器 + 打一场 3v3 的页面）已完成，接下来是战斗过程图、手动对战、能力值排序，需求见 [docs/mechanics.md](docs/mechanics.md) 第 14 节。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
+当前进度：1v1 引擎已完成（数值、伤害、回合结算），并与 PvPoke 源码逐回合核对过；有两种策略："按剧本出招"和一组可调的简单规则（与 PvPoke AI 的比较见 [docs/simple_policy_vs_pvpoke.md](docs/simple_policy_vs_pvpoke.md)）。正在做第 2 步（自定义宝可梦与 Mega 规则）：已能用覆盖文件加入未发布的宝可梦和招式，给 IV 组合排名，按赛季规则（含 Mega 等级上限）建立配置，并用它跑 1v1、输出带配置说明的时间线；配招和对手写在配置文件里，可以批量跑 0–2 盾对 0–2 盾的九宫格。第 2 步已完成。第 3 步（3v3）拆成的几个单元都已完成，拆分和各项决定见 [docs/mechanics.md](docs/mechanics.md) 第 13 节：3v3-a（引擎以队伍为单位，盾全队共用，1v1 是每队一只）、3v3-b（换人：主动换人、大招后 0 回合换人、倒下后换人，换人冷却，3v3 胜负判定）、3v3-c（换人结算与 PvPoke 源码逐回合核对）、3v3-d（对位评估；3v3 策略 `TeamPolicy`：倒下后换上对位评分最高的，当前对位不好就主动换人，不在必输的对位上开盾）、3v3-e（3v3 配置文件与报告，含队伍检查）、3v3-f1（PvPoke 排名快照；1v1 对环境前 N 的批量九宫格，Mega 和非 Mega 分开取）、3v3-f2（队伍对队伍：我方的队伍对手写的和从环境前 N 随机抽的很多队各打一场 3v3）和 3v3-g（对固定对手策略的应对：对手的 TeamPolicy 不变，逐步试探我方更好的打法）。第 4 步（网页界面）进行中：4a（本地服务器 + 打一场 3v3 的页面）、4b（战斗过程图和对位分段）已完成，接下来是手动对战、能力值排序，需求见 [docs/mechanics.md](docs/mechanics.md) 第 14 节。机制规格见 [docs/mechanics.md](docs/mechanics.md)。
 
 ## 目录
 
@@ -33,6 +33,7 @@
   - `team_battle.py`：3v3 配置文件（TOML）和报告
   - `team_matrix.py`：队伍对队伍：我方几队对手写的和随机抽的很多队各打一场 3v3，出总表和每一场的结果
   - `best_response.py`：对固定对手策略的应对：对手的策略不变，逐步试探我方更好的打法
+  - `battle_summary.py`：一场对战的概括：对位分段（报告和网页都用）、过程图的招式带
   - `web_api.py`：网页界面的接口（收 dict、回 dict），只做转换
 - `tests/`：pytest 测试；`tests/fixtures/` 是用 PvPoke 源码生成的参考数据
 - `tools/pvpoke_ref/`：在 Node 里运行 PvPoke 源码、生成参考数据的脚本
@@ -49,7 +50,7 @@
 
 ## 网页界面
 
-在浏览器里选队伍、打一场 3v3、看结果和逐回合时间线（第 4 步，4a；需求和分步见 [docs/mechanics.md](docs/mechanics.md) 第 14 节）：
+在浏览器里选队伍、打一场 3v3，看结果、战斗过程图（双方的招式带和 HP 曲线）、对位分段和逐回合时间线（第 4 步；需求和分步见 [docs/mechanics.md](docs/mechanics.md) 第 14 节）：
 
 ```bash
 .venv/bin/python -m tools.run_web
@@ -174,7 +175,7 @@ T  54  Swampert        sends in Altaria
 .venv/bin/python -m tools.run_team_battle experiments/gl_3v3_example.toml --output docs/experiments/gl_3v3_example.md
 ```
 
-建配置时检查队伍：每队 3 只、同一种宝可梦不能带两只（按图鉴编号，暗影、Mega、地区形态都算同一种）、Mega 不超过 1 只。报告（[docs/experiments/gl_3v3_example.md](docs/experiments/gl_3v3_example.md)）里有两队的配置和策略参数、结果、每只的情况（剩余 HP、伤害、放了哪些大招、挨大招时开没开盾）、开局对位评分、每次换人和开盾的原因，最后是带原因的完整时间线。例子没写 IV，用的是 IV 排名第 1，所以结果（B 赢，评分 221 vs 778，100 回合）和上面用 PvPoke 默认 IV 的那一场不同。
+建配置时检查队伍：每队 3 只、同一种宝可梦不能带两只（按图鉴编号，暗影、Mega、地区形态都算同一种）、Mega 不超过 1 只。报告（[docs/experiments/gl_3v3_example.md](docs/experiments/gl_3v3_example.md)）里有两队的配置和策略参数、结果、每只的情况（剩余 HP、伤害、放了哪些大招、挨大招时开没开盾）、开局对位评分、对位分段（在场的两只不变的一段算一段：各放了什么招、HP 怎么变、怎么结束的）、每次换人和开盾的原因，最后是带原因的完整时间线。例子没写 IV，用的是 IV 排名第 1，所以结果（B 赢，评分 221 vs 778，100 回合）和上面用 PvPoke 默认 IV 的那一场不同。
 
 ### 队伍对队伍
 

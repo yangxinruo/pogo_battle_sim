@@ -18,6 +18,7 @@ from dataclasses import asdict
 from typing import Any, get_args, get_type_hints
 
 from pogo_sim.battle import BattleResult
+from pogo_sim.battle_summary import lane_items
 from pogo_sim.combatant import make_combatant
 from pogo_sim.config import (
     REPO_ROOT,
@@ -37,8 +38,10 @@ from pogo_sim.team_battle import (
     SWITCH_KINDS,
     TeamBattle,
     charged_records,
+    charged_use_text,
     format_outcome,
     format_team_battle_report,
+    max_hps,
     member_summaries,
     opening_matchups,
     parse_common_settings,
@@ -46,6 +49,8 @@ from pogo_sim.team_battle import (
     policy_text,
     prepare_team_battle,
     run_team_battle,
+    segment_end_text,
+    segments,
     switch_records,
     timeline_names,
 )
@@ -282,6 +287,7 @@ def battle_payload(battle: TeamBattle, result: BattleResult) -> dict[str, Any]:
     - members：每只的情况（team_battle.MemberSummary）
     - opening：开局对位评分（只有一个时是从第 0 方看）
     - switches、charged：换人和大招，带策略给的原因
+    - segments：对位分段（segments_payload）；chart：过程图的数据（chart_payload）
     - timeline：逐回合的事件和回合末的状态（timeline_payload）
     - report_markdown：和命令行一样的完整报告
     """
@@ -318,8 +324,54 @@ def battle_payload(battle: TeamBattle, result: BattleResult) -> dict[str, Any]:
         "opening": [{"side": o.side, "ratings": o.ratings} for o in opening_matchups(battle)],
         "switches": [asdict(r) | {"kind_text": SWITCH_KINDS[r.kind]} for r in switch_records(result)],
         "charged": [asdict(r) for r in charged_records(result)],
+        "segments": segments_payload(battle, result),
+        "chart": chart_payload(battle, result),
         "timeline": timeline_payload(result, names),
         "report_markdown": format_team_battle_report(battle, result),
+    }
+
+
+def segments_payload(battle: TeamBattle, result: BattleResult) -> list[dict[str, Any]]:
+    """对位分段（battle_summary.Segment），加上报告里用的文字：每方的大招（charged_text）和怎么结束（end_text）。"""
+    all_segments = segments(battle, result)
+    return [
+        asdict(segment) | {
+            "charged_text": [charged_use_text(side) for side in segment.sides],
+            "end_text": segment_end_text(battle, result, segment, last=i == len(all_segments) - 1),
+        }
+        for i, segment in enumerate(all_segments)
+    ]
+
+
+def chart_payload(battle: TeamBattle, result: BattleResult) -> dict[str, Any]:
+    """过程图的数据。逐回合的数组都从第 0 回合（开打之前）开始，下标就是回合数：
+
+    - elapsed_ms[t]：第 t 回合结束时的对战时间
+    - sides[方]：active[t] 是第 t 回合在场的第几只（第 0 回合是首发）；hp[第几只][t]、energy[第几只][t]
+      是第 t 回合结束时的 HP 和能量；max_hp；lane 是招式带（battle_summary.LaneItem）
+    - move_names：图上用到的招式的名字
+    """
+    lanes = lane_items(result, battle.gm)
+    hps = max_hps(battle)
+    snapshots = result.snapshots
+    if [s.turn for s in snapshots] != list(range(1, result.turns + 1)):
+        raise ValueError("快照要每回合一个")  # 引擎每回合都记，不应该发生
+    sides = []
+    for side, team in enumerate(battle.teams):
+        size = len(team.members)
+        sides.append({
+            "active": [0] + [s.sides[side].active for s in snapshots],
+            "max_hp": list(hps[side]),
+            "hp": [[hps[side][slot]] + [s.sides[side].member_hp[slot] for s in snapshots] for slot in range(size)],
+            "energy": [[0] + [s.sides[side].member_energy[slot] for s in snapshots] for slot in range(size)],
+            "lane": [asdict(item) for item in lanes[side]],
+        })
+    used = {item.move_id for lane in lanes for item in lane if item.move_id in battle.gm.moves}
+    return {
+        "turns": result.turns,
+        "elapsed_ms": [0] + [s.elapsed_ms for s in snapshots],
+        "sides": sides,
+        "move_names": {move_id: battle.gm.get_move(move_id).name for move_id in sorted(used)},
     }
 
 
@@ -349,6 +401,7 @@ def timeline_payload(result: BattleResult, names: Names) -> list[dict[str, Any]]
             "turn": turn,
             "events": events.get(turn, []),
             "sides": [asdict(side) for side in snapshots[turn].sides] if turn in snapshots else None,
+            "elapsed_ms": snapshots[turn].elapsed_ms if turn in snapshots else None,
         }
         for turn in sorted(events.keys() | snapshots.keys())
     ]

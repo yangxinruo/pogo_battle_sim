@@ -14,14 +14,17 @@ from pogo_sim import web_api
 from pogo_sim.config import REPO_ROOT, ConfigError, load_toml, parse_entry, prepare_entry
 from pogo_sim.gamemaster import load_gamemaster
 from pogo_sim.season import PVPOKE_SEASON, SEASON_PRESETS
+from pogo_sim.battle_summary import lane_items
 from pogo_sim.team_battle import (
     SWITCH_KINDS,
     format_team_battle_report,
     load_team_battle_config,
+    max_hps,
     member_summaries,
     parse_team_battle_config,
     prepare_team_battle,
     run_team_battle,
+    segments,
     timeline_names,
 )
 from pogo_sim.timeline import MoveEvent, SwitchEvent, describe_event, event_actor, format_event
@@ -316,3 +319,48 @@ def test_species_catalog_league():
         web_api.species_catalog([], "abc")
     with pytest.raises(ConfigError, match="data/custom/ 里没有覆盖文件"):
         web_api.species_catalog(["../gamemaster.json"])
+
+
+# ---- 对位分段和过程图（4b） ----
+
+
+def test_segments_payload(payload, engine_battle):
+    battle, result = engine_battle
+    expected = json.loads(json.dumps([asdict(s) for s in segments(battle, result)]))
+    sent = [{k: v for k, v in s.items() if k not in ("charged_text", "end_text")} for s in payload["segments"]]
+    assert sent == expected
+    assert [s["end_text"] for s in payload["segments"]] == [
+        "Team B 0 回合换人", "Azumarill 倒下", "Registeel 倒下", "Medicham 倒下",
+    ]
+    assert payload["segments"][0]["charged_text"] == ["ICE_BEAM 挡下", "HYDRO_CANNON 挡下、HYDRO_CANNON 挡下"]
+
+
+def test_chart_payload(payload, engine_battle):
+    battle, result = engine_battle
+    chart = payload["chart"]
+    turns = result.turns
+    assert chart["turns"] == turns
+    assert len(chart["elapsed_ms"]) == turns + 1 and chart["elapsed_ms"][0] == 0
+    assert chart["elapsed_ms"][-1] == result.elapsed_ms
+    lanes = lane_items(result, battle.gm)
+    for side in (0, 1):
+        data = chart["sides"][side]
+        assert data["max_hp"] == list(max_hps(battle)[side])
+        assert len(data["active"]) == turns + 1 and data["active"][0] == 0
+        for slot, series in enumerate(data["hp"]):
+            assert len(series) == turns + 1
+            assert series[0] == data["max_hp"][slot]
+            assert series[1:] == [s.sides[side].member_hp[slot] for s in result.snapshots]
+        for slot, series in enumerate(data["energy"]):
+            assert series[0] == 0
+            assert series[1:] == [s.sides[side].member_energy[slot] for s in result.snapshots]
+        assert data["active"][1:] == [s.sides[side].active for s in result.snapshots]
+        assert data["lane"] == json.loads(json.dumps([asdict(item) for item in lanes[side]]))
+    assert chart["move_names"]["HYDRO_CANNON"] == "Hydro Cannon"
+    assert "switch" not in chart["move_names"]
+
+
+def test_timeline_has_elapsed_time(payload, engine_battle):
+    _, result = engine_battle
+    by_turn = {entry["turn"]: entry for entry in payload["timeline"]}
+    assert by_turn[result.turns]["elapsed_ms"] == result.elapsed_ms
