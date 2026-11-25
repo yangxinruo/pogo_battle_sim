@@ -1,4 +1,4 @@
-"""本地网页界面（第 4 步）：启动一个只给本机用的服务器，在浏览器里选队伍、打 3v3、看时间线、排能力值。
+"""本地网页界面（第 4 步）：启动一个只给本机用的服务器，在浏览器里选队伍、打 3v3、搜索应对、看时间线、排能力值。
 
 用法（在仓库根目录）：
     .venv/bin/python -m tools.run_web                  # 启动后自动打开 http://127.0.0.1:8000
@@ -18,6 +18,7 @@
     POST /api/build                    一只宝可梦按赛季规则建配置
     POST /api/team-battle              打一场 3v3
     POST /api/manual-battle            手动对战：按玩家到现在的决定重打到下一个要玩家决定的地方
+    POST /api/best-response            对另一队的固定策略，搜索一队的打法（逐步试探，0.5–2 秒）
 配置写错时回 400 和 {"error": "中文说明"}；服务器里的意外错误回 500，详细信息打印在终端。
 """
 
@@ -56,6 +57,7 @@ POST_API: dict[str, Callable[[Any], Any]] = {
     "/api/build": web_api.build_member,
     "/api/team-battle": web_api.team_battle,
     "/api/manual-battle": web_api.manual_battle,
+    "/api/best-response": web_api.best_response,
 }
 
 

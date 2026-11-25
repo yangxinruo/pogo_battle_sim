@@ -12,6 +12,7 @@ from pogo_sim.best_response import (
     format_best_response_report,
     format_changes,
     format_score,
+    format_tried,
     play,
     score,
     search_best_response,
@@ -70,6 +71,15 @@ def test_options(battle: TeamBattle) -> None:
     assert all(p.options == (True, False) and p.labels == ("shield", "no shield") for p in shields)
     replacements = [p for p in trial.points if p.kind == "replacement"]
     assert [len(p.options) for p in replacements] == [2, 1]  # 第二次选人只剩一只
+
+
+def test_active_member_at_each_decision(battle: TeamBattle) -> None:
+    """决定点记下做决定时在场的是第几只：开局是首发，第 1 回合换上 Medicham 以后是第 1 只。"""
+    trial = play(battle, 0, {0: SwitchAction(1)})
+    assert trial.points[0].active == 0
+    assert trial.points[1].active == 1
+    replacement = next(p for p in trial.points if p.kind == "replacement")
+    assert replacement.active not in replacement.options  # 倒下的那只不在选项里
 
 
 def test_forced_decision_is_used_and_explained(battle: TeamBattle) -> None:
@@ -133,6 +143,22 @@ def test_search_only_improves(response: BestResponse) -> None:
         assert values[change.chosen] == change.after == max(values.values())
 
 
+def test_every_tried_point_is_recorded(response: BestResponse) -> None:
+    """试过的决定点正好是搜索后那一场里有不止一个选项的决定点，按顺序；没改的没有更好的选项。"""
+    best_points = [p for p in response.best.points if len(p.options) >= 2]
+    assert [t.point.index for t in response.tried] == [p.index for p in best_points]
+    for tried, final in zip(response.tried, best_points):
+        assert (tried.point.turn, tried.point.kind, tried.point.options) == (final.turn, final.kind, final.options)
+        assert tried.point.chosen == tried.point.policy_choice  # 试之前照原策略
+        assert final.chosen == tried.chosen
+        values = dict(tried.option_scores)
+        assert set(values) == set(tried.point.options)
+        assert values[tried.point.policy_choice] == tried.before
+        if not tried.changed:
+            assert tried.after == tried.before == max(values.values())
+    assert (response.examined, len(response.changes)) == (32, 5)
+
+
 def test_best_line_replays(battle: TeamBattle, response: BestResponse) -> None:
     """按搜索出来的指定重打一场，得到同样的结果；改过的决定点正好是指定的那些。"""
     best = response.best
@@ -167,13 +193,26 @@ def test_changes_table(response: BestResponse) -> None:
         "fast BUBBLE: 输 221; switch to Medicham: 输 465; switch to Registeel: 输 237 |"
     )
     assert lines[3] == "| 11 | 开盾 | shield | no shield | 输 465 → 赢 521 | shield: 输 465; no shield: 赢 521 |"
-    assert format_changes(replace(response, changes=())).startswith("一个都没改")
+    unchanged_only = replace(response, tried=tuple(t for t in response.tried if not t.changed))
+    assert format_changes(unchanged_only).startswith("一个都没改")
+
+
+def test_tried_table(response: BestResponse) -> None:
+    lines = format_tried(response).splitlines()
+    assert lines[0] == "| 回合 | 决定 | 原策略 | 搜索后 | 各选项打出来的结果 |"
+    assert lines[2] == (
+        "| 1 | 出招 | fast BUBBLE | **switch to Medicham** | "
+        "fast BUBBLE: 输 221; switch to Medicham: 输 465; switch to Registeel: 输 237 |"
+    )
+    assert len(lines) == 2 + response.examined
+    assert sum("**" in line for line in lines) == len(response.changes)
+    assert any("| 同原策略 |" in line for line in lines)
 
 
 def test_report(battle: TeamBattle, response: BestResponse) -> None:
     report = format_best_response_report(battle, response, source="x.toml")
     lines = report.splitlines()
-    for heading in ("## 队伍", "## 搜索结果", "## 改了哪些决定", "## 搜索后的这一场", "## 每只的情况", "## 换人", "## 时间线"):
+    for heading in ("## 队伍", "## 搜索结果", "## 改了哪些决定", "## 试过的全部决定点", "## 搜索后的这一场", "## 每只的情况", "## 换人", "## 时间线"):
         assert heading in lines, heading
     assert (
         "- 策略：Team B（第 1 方）固定用 3v3 策略 TeamPolicy；"
@@ -190,8 +229,9 @@ def test_report(battle: TeamBattle, response: BestResponse) -> None:
 def test_example_report_is_current() -> None:
     saved = (REPO_ROOT / "docs" / "experiments" / "gl_3v3_best_response.md").read_text(encoding="utf-8")
     assert "| 62 | 0 回合换人 | stay | switch to Registeel | 赢 577 → 赢 588 | stay: 赢 577; switch to Registeel: 赢 588 |" in saved
+    assert "| 62 | 0 回合换人 | stay | **switch to Registeel** | stay: 赢 577; switch to Registeel: 赢 588 |" in saved
 
 
 def test_decision_point_label() -> None:
-    point = DecisionPoint(0, 1, "zero_turn", (None, 2), ("stay", "switch to X"), None, 2)
+    point = DecisionPoint(0, 1, "zero_turn", 0, (None, 2), ("stay", "switch to X"), None, 2)
     assert (point.label(None), point.label(2)) == ("stay", "switch to X")

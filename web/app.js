@@ -18,7 +18,8 @@ const state = {
   buildTimers: new Map(),
   buildSeq: new Map(), // 每只最新一次建配置请求的序号：旧请求的结果晚到时丢掉
   openDetails: new Set(), // 展开了"更多设置"的是哪几只（重新画这一只时保持展开）
-  result: null, // POST /api/team-battle 的结果（手动对战打完以后是那一场的结果）
+  result: null, // POST /api/team-battle 的结果（手动对战打完以后是那一场的结果；搜索应对时是正在看的那一场）
+  bestResponse: null, // POST /api/best-response 的结果（4e）；打一场、手动对战打完时清掉
   manual: null, // 手动对战：{config, side, decisions, data（服务器最近一次的回答）, seenEvents, pending}
   showDecisions: true, // 时间线里显示决定和原因
 };
@@ -334,7 +335,7 @@ function formsOf(species) {
 // ---- 两队 ----
 
 function renderTeams() {
-  renderManualSideSelect();
+  renderSideSelects();
   document.getElementById("teams").replaceChildren(...SIDES.map(renderTeam));
   for (const side of SIDES) {
     state.config.team[side].member.forEach((_, slot) => renderBuild(side, slot));
@@ -351,7 +352,7 @@ function renderTeam(side) {
         class: "team-name",
         value: team.name,
         title: "队名（两队不能同名）",
-        oninput: (e) => { team.name = e.target.value; configChanged(); renderManualSideSelect(); },
+        oninput: (e) => { team.name = e.target.value; configChanged(); renderSideSelects(); },
       }),
       select(shields, team.shields, (v) => { team.shields = Number(v); configChanged(); }),
       select(options.switching.map((s) => [s.key, s.name]), team.policy.switching,
@@ -562,6 +563,7 @@ async function runBattle() {
   setStatus("正在打……");
   try {
     state.result = await api("/api/team-battle", requestConfig());
+    state.bestResponse = null;
     renderResult();
     setStatus(`打完了：${state.result.result.turns} 回合`);
     document.getElementById("result").scrollIntoView({behavior: "smooth"});
@@ -612,12 +614,13 @@ function renderResult() {
   const section = document.getElementById("result");
   section.hidden = false;
   section.replaceChildren(
+    ...(state.bestResponse ? [bestResponseCard(state.bestResponse)] : []),
     el("div", {class: "card"},
       el("div", {class: "result-head"},
         el("h2", {}, "结果"),
         el("button", {onclick: downloadReport}, "下载 Markdown 报告"),
       ),
-      el("p", {class: "stale", id: "stale-note", hidden: true}, "配置改过了：下面还是上一次打的结果，再点一次“打一场”更新。"),
+      el("p", {class: "stale", id: "stale-note", hidden: true}, "配置改过了：下面还是上一次的结果，再点一次“打一场”或“搜索”更新。"),
       el("p", {class: "outcome"}, r.outcome),
       el("p", {class: "muted"}, `${r.settings.league_name}；赛季规则：${r.settings.season}`),
       r.settings.custom_log.map((line) => el("p", {class: "muted"}, `覆盖文件：${line}`)),
@@ -745,7 +748,8 @@ function timelineTable(r) {
     const cells = SIDES.map((side) => el("td", {class: `events-${side}`},
       events.filter((e) => e.side === side).map((e) => el("div", {class: eventClass(e)},
         el("span", {class: "who"}, r.teams[side].names[e.slot]), " ", e.text))));
-    rows.push({attrs: {id: `turn-${entry.turn}`}, cells: [
+    const changed = changedTurns(r).has(entry.turn);
+    rows.push({attrs: {id: `turn-${entry.turn}`, class: changed ? "br-changed" : undefined}, cells: [
       el("td", {class: "turn"}, `T${entry.turn}`),
       ...cells,
       entry.sides ? el("td", {}, SIDES.map((side) => sideState(r, side, entry.sides[side]))) : el("td", {}, ""),
@@ -814,7 +818,8 @@ function chartView(r) {
   );
   const help = el("p", {class: "muted"},
     "招式带：小块是快招（宽度是招式的回合数），竖条是大招（空心是被开盾挡下，旁边写伤害），紫线是换人，✕ 是倒下。" +
-    "HP：粗线是在场那只，细的淡线是后备，虚线是在场那只的能量（0–100）。鼠标移上去看这一回合的详情，点一下跳到下面时间线的那一行。");
+    "HP：粗线是在场那只，细的淡线是后备，虚线是在场那只的能量（0–100）。鼠标移上去看这一回合的详情，点一下跳到下面时间线的那一行。" +
+    (changes(r).length ? "绿色虚线是搜索应对改了的决定（改1、改2……，同上面的表）。" : ""));
   const holder = el("div", {class: "chart-holder", id: "chart-holder"});
   // 先放进页面再画：要知道可用的宽度
   requestAnimationFrame(() => drawChart(r, holder));
@@ -858,6 +863,15 @@ function drawChart(r, holder) {
   for (const side of SIDES) {
     parts.push(...laneShapes(r, side, layout), ...hpShapes(r, side, layout));
   }
+
+  // 搜索应对改了的决定（4e）：绿色虚线，上面写第几个改动
+  changes(r).forEach((change, i) => {
+    const xm = (x(change.turn - 1) + x(change.turn)) / 2;
+    parts.push(
+      svg("line", {x1: xm, x2: xm, y1: laneY[0], y2: axisY, class: "br-mark"}),
+      svg("text", {x: xm + 2, y: axisY - 3, class: "br-mark-label"}, `改${i + 1}`),
+    );
+  });
 
   // 鼠标所在的那一回合
   const column = svg("rect", {class: "hover-column", y: laneY[0], height: axisY - laneY[0], visibility: "hidden"});
@@ -1050,7 +1064,9 @@ function downloadReport() {
   const safe = (text) => text.replace(/[^\w一-鿿-]+/g, "_");
   const blob = new Blob([r.report_markdown], {type: "text/markdown;charset=utf-8"});
   const url = URL.createObjectURL(blob);
-  const link = el("a", {href: url, download: `3v3_${safe(r.teams[0].name)}_vs_${safe(r.teams[1].name)}.md`});
+  const searched = state.bestResponse && r === state.bestResponse.result;
+  const name = `${searched ? "best_response" : "3v3"}_${safe(r.teams[0].name)}_vs_${safe(r.teams[1].name)}.md`;
+  const link = el("a", {href: url, download: name});
   document.body.append(link);
   link.click();
   link.remove();
@@ -1066,12 +1082,16 @@ function downloadReport() {
 
 const MANUAL_KEY = "pogo_sim.manual.v1";
 
-function renderManualSideSelect() {
-  const select = document.getElementById("manual-side");
-  if (!select || !state.config) return;
-  const current = select.value || "0";
-  select.replaceChildren(...SIDES.map((side) => el("option", {value: String(side)}, state.config.team[side].name || `第 ${side} 方`)));
-  select.value = current;
+/** "手动对战：我操作哪一队"和"搜索应对：搜哪一队"的下拉框，选项是两队的队名。 */
+function renderSideSelects() {
+  if (!state.config) return;
+  for (const id of ["manual-side", "br-side"]) {
+    const select = document.getElementById(id);
+    if (!select) continue;
+    const current = select.value || "0";
+    select.replaceChildren(...SIDES.map((side) => el("option", {value: String(side)}, state.config.team[side].name || `第 ${side} 方`)));
+    select.value = current;
+  }
 }
 
 /** 记住进行中的手动对战（配置、哪一方、到现在的决定），刷新页面以后可以接着打。 */
@@ -1134,6 +1154,7 @@ async function stepManual(decision) {
     renderArena(before);
     if (data.status === "finished") {
       state.result = data.result;
+      state.bestResponse = null;
       renderResult();
     }
   } catch (e) {
@@ -1430,6 +1451,112 @@ function onManualKey(event) {
   }
 }
 
+// ---- 搜索应对（4e） ----
+//
+// 对另一队的 3v3 策略（固定不变），逐步试探搜索一队更好的打法（pogo_sim/best_response.py、web_api.best_response）。
+// 服务器返回搜索的概况、试过的每个决定点（每个选项打出来的结果）、搜索后的这一场和原策略那一场；
+// 下面的过程图、分段、时间线显示其中一场，可以切换。
+
+async function runBestResponse() {
+  const button = document.getElementById("br-start");
+  const side = Number(document.getElementById("br-side").value);
+  button.disabled = true;
+  showError("");
+  setStatus("正在搜索……（每个决定点的每个选项都打一场，一般 0.5–2 秒）");
+  try {
+    const data = await api("/api/best-response", {config: requestConfig(), side});
+    state.bestResponse = data;
+    state.result = data.result;
+    renderResult();
+    setStatus(`搜索完了：打了 ${data.search.trials} 场，用时 ${data.search.seconds} 秒`);
+    document.getElementById("result").scrollIntoView({behavior: "smooth"});
+  } catch (e) {
+    showError(e.message);
+    setStatus("");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/** 正在看的是搜索后的那一场时，改了的决定点（否则为空）。 */
+function changes(r) {
+  const br = state.bestResponse;
+  return br && r === br.result ? br.tried.filter((t) => t.changed) : [];
+}
+
+function changedTurns(r) {
+  return new Set(changes(r).map((t) => t.turn));
+}
+
+/** 一个决定点每个选项打出来的结果：绿是赢、灰是平、红是输；粗框是搜索后选的。 */
+function optionChips(tried) {
+  return el("div", {class: "br-options"}, tried.options.map((o) => el("span", {
+    class: `br-option outcome-${o.score.outcome}${o.chosen ? " chosen" : ""}`,
+  }, `${o.label}：${o.score.short}`, o.policy ? el("span", {class: "tag"}, "（原策略）") : null)));
+}
+
+function bestResponseCard(br) {
+  const s = br.search;
+  const showing = state.result === br.baseline ? "baseline" : "result";
+  const view = (key, text) => el("button", {
+    class: showing === key ? "current" : undefined,
+    onclick: () => { state.result = br[key]; renderResult(); },
+  }, text);
+  const changed = br.tried.filter((t) => t.changed);
+  const jump = (t) => () => { if (showing === "result") jumpToTurn(t.turn); };
+
+  const changedRows = changed.map((t, i) => ({
+    attrs: {class: "br-row", title: "点一下跳到时间线的这一回合", onclick: jump(t)},
+    cells: [
+      el("td", {class: "num"}, `改${i + 1}`),
+      el("td", {class: "num"}, t.turn),
+      t.kind_text,
+      t.policy_choice,
+      el("td", {}, el("b", {}, t.chosen)),
+      `${t.before.short} → ${t.after.short}`,
+      el("td", {}, optionChips(t)),
+    ],
+  }));
+  const allRows = br.tried.map((t) => ({
+    attrs: {class: `br-row${t.changed ? " br-changed" : ""}`, onclick: jump(t)},
+    cells: [
+      el("td", {class: "num"}, t.turn),
+      t.kind_text,
+      t.policy_choice,
+      t.changed ? el("td", {}, el("b", {}, t.chosen)) : el("td", {class: "muted"}, "同原策略"),
+      el("td", {}, optionChips(t)),
+    ],
+  }));
+
+  return el("div", {class: "card"},
+    el("h2", {}, `搜索应对：${s.team} 对 ${s.opponent} 的固定策略`),
+    el("p", {class: "muted"},
+      "先让双方都照原策略（TeamPolicy）打一场；然后沿着当前最好的一场，按顺序把 " + s.team +
+      " 每个决定点的其余选项都试一遍（之前的决定照当前最好的一场，之后双方照各自的策略打完），严格更好就改。" +
+      "比较时先看胜负，再看评分。结果不比原策略差，但不保证全局最优；搜索完全知道对方的策略会怎么应对，所以是针对这个策略的打法。"),
+    el("p", {class: "br-summary"}, el("b", {}, "原策略："), s.baseline.text),
+    el("p", {class: "br-summary"}, el("b", {}, "搜索后："), s.best.text),
+    el("p", {class: "muted"},
+      `${s.team} 一共做了 ${s.decisions} 个决定，其中 ${s.examined} 个有不止一个选项、都试过；改了 ${s.changed} 个。` +
+      `一共打了 ${s.trials} 场，用时 ${s.seconds} 秒。`),
+    el("div", {class: "br-view"}, "下面显示：", view("result", "搜索后的这一场"), view("baseline", "原策略那一场")),
+    el("h2", {class: "sub"}, "改了哪些决定"),
+    changed.length
+      ? [
+        el("p", {class: "muted"},
+          "按搜索的顺序。“改之前 → 改之后”是当时最好的一场和改了以后的结果（从 " + s.team + " 看：胜负和评分）；" +
+          "“各选项”是这个决定点每个选项打出来的结果（之前的决定照当时最好的一场，之后照各自的策略）。" +
+          "后面的改动是在前面改过的基础上试的。图上的绿色虚线是改了的决定；点一行跳到时间线的那一回合。"),
+        table(["", "回合", "决定", "原策略", "改成", "改之前 → 改之后", "各选项打出来的结果"], changedRows),
+      ]
+      : el("p", {}, "一个都没改：每个决定点上，原策略的选择已经是试过的选项里最好的。"),
+    el("details", {class: "br-all"},
+      el("summary", {}, `试过的全部决定点（${br.tried.length} 个）`),
+      el("p", {class: "muted"}, "每个有不止一个选项的决定点一行，按搜索的顺序；改了的标绿。"),
+      table(["回合", "决定", "原策略", "搜索后", "各选项打出来的结果"], allRows)),
+  );
+}
+
 // ---- 启动 ----
 
 /** 按 state.config 画设置和两队，并请服务器建每只的配置。 */
@@ -1446,6 +1573,7 @@ async function init() {
   document.getElementById("reset").addEventListener("click", resetToExample);
   document.getElementById("manual-start").addEventListener("click", startManual);
   document.getElementById("manual-resume").addEventListener("click", resumeManual);
+  document.getElementById("br-start").addEventListener("click", runBestResponse);
   document.addEventListener("keydown", onManualKey);
   let resizeTimer;
   window.addEventListener("resize", () => {  // 窗口宽度变了，按新的宽度重画过程图

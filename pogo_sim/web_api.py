@@ -9,6 +9,7 @@ tools/run_web.py 把这些函数转发成 HTTP 接口。
 - build_member(raw)：一只宝可梦按赛季规则建配置（CP、等级、IV、说明）
 - team_battle(raw)：打一场 3v3，返回结果、每只的情况、换人和开盾、逐回合时间线、Markdown 报告
 - manual_battle(raw)：手动对战，玩家操作一队；重打到下一个要玩家决定的地方，返回局面和能选什么（4c）
+- best_response(raw)：对另一队的固定策略，搜索一队的打法；改了哪些决定、每个决定点各选项的结果（4e）
 - stat_table_payload(league, season, custom_files)：能力值排序，每只的 CP、等级、IV、实际能力值、坦度（4d）
 
 网页发来的配置和 3v3 配置文件（team_battle.py 开头）写法一样、键也一样，只有一处不同：
@@ -30,6 +31,15 @@ from typing import Any, get_args, get_type_hints
 
 from pogo_sim.battle import Battle, BattleResult
 from pogo_sim.battle_summary import lane_items
+from pogo_sim.best_response import (
+    DECISION_KINDS,
+    DecisionPoint,
+    Score,
+    Tried,
+    format_best_response_report,
+    format_score,
+    search_best_response,
+)
 from pogo_sim.combatant import make_combatant
 from pogo_sim.config import (
     REPO_ROOT,
@@ -53,6 +63,7 @@ from pogo_sim.manual import (
     parse_decisions,
     play_manual,
 )
+from pogo_sim.policy import ChargedAction, FastAction, SwitchAction
 from pogo_sim.rules import BattleRules
 from pogo_sim.rankings import RankedPokemon, load_rankings
 from pogo_sim.rules import PVPOKE_COMPAT
@@ -565,6 +576,106 @@ def timeline_payload(result: BattleResult, names: Names) -> list[dict[str, Any]]
         }
         for turn in sorted(events.keys() | snapshots.keys())
     ]
+
+
+# ---- 对固定对手策略的应对（4e） ----
+
+
+def best_response(raw: Any) -> dict[str, Any]:
+    """对另一队的固定策略（TeamPolicy），搜索第 side 方的打法（逐步试探，pogo_sim/best_response.py）。
+
+    raw：{"config": 和 team_battle 一样的配置, "side": 搜索哪一方（0 或 1）}。
+    返回：
+    - search：概况——搜索的是哪一方、原策略和搜索后的结果、一共几个决定、试过几个、改了几个、打了几场、用时
+    - tried：试过的每个决定点（有不止一个选项的），按搜索的顺序（tried_payload）；changed 为真的是改了的
+    - result：搜索后的这一场（battle_payload；报告是 best-response 的完整报告，和命令行 --best-response 一样）
+    - baseline：原策略那一场（battle_payload；和 team_battle 打出来的完全相同）
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{WHERE}：要写成表（键值对），得到 {type(raw).__name__}")
+    check_unknown_keys(raw, {"config", "side"}, WHERE)
+    for key in ("config", "side"):
+        if key not in raw:
+            raise ConfigError(f"{WHERE}：缺少 {key}")
+    side = raw["side"]
+    if side not in (0, 1) or isinstance(side, bool):
+        raise ConfigError(f"{WHERE}：side（搜索哪一方的打法）要是 0 或 1，得到 {side!r}")
+    battle = prepared_battle(raw["config"])
+    response = search_best_response(battle, side)
+
+    result = battle_payload(battle, response.best.result, format_best_response_report(battle, response))
+    policy = policy_text(battle.teams[side].setup.policy)
+    result["teams"][side]["policy"] = f"逐步试探搜索出来的打法；原策略（起点）是 {policy}"
+    names = [team.setup.name for team in battle.teams]
+    return {
+        "search": {
+            "side": side,
+            "team": names[side],
+            "opponent": names[1 - side],
+            "baseline": score_payload(response.baseline.score) | {"text": format_outcome(battle, response.baseline.result)},
+            "best": score_payload(response.best.score) | {"text": format_outcome(battle, response.best.result)},
+            "decisions": len(response.best.points),
+            "examined": response.examined,
+            "changed": len(response.changes),
+            "trials": response.trials,
+            "seconds": round(response.seconds, 2),
+        },
+        "tried": [tried_payload(battle, side, tried) for tried in response.tried],
+        "result": result,
+        "baseline": battle_payload(battle, response.baseline.result),
+    }
+
+
+def score_payload(value: Score) -> dict[str, Any]:
+    """比较两场用的分数（从搜索的一方看）：outcome 赢 2 / 平 1 / 输 0，rating 是评分，short 例如"输 221"。"""
+    return {"outcome": value[0], "rating": value[1], "short": format_score(value)}
+
+
+def choice_label(battle: TeamBattle, side: int, point: DecisionPoint, option: Any) -> str:
+    """决定点的一个选项在网页上的文字，和手动对战的按钮一样，例如"快招 Bubble""换上 Medicham""不开盾"。"""
+    names = timeline_names(battle)[side]
+    if point.kind == "shield":
+        return "开盾" if option else "不开盾"
+    if point.kind in ("zero_turn", "replacement"):
+        return "不换" if option is None else f"换上 {names[option]}"
+    if isinstance(option, FastAction):
+        build = battle.teams[side].members[point.active].build
+        return f"快招 {battle.gm.get_move(build.fast_move_id).name}"
+    if isinstance(option, ChargedAction):
+        return f"大招 {battle.gm.get_move(option.move_id).name}"
+    if isinstance(option, SwitchAction):
+        return f"换上 {names[option.to]}"
+    raise ValueError(f"不认识的选项 {option!r}")
+
+
+def tried_payload(battle: TeamBattle, side: int, tried: Tried) -> dict[str, Any]:
+    """试过的一个决定点：第几个决定、回合、种类、原策略的选择、搜索后的选择、试之前和试之后的结果，
+    以及每个选项打出来的结果（options：文字、分数、是不是原策略的选择、是不是搜索后的选择）。"""
+    point = tried.point
+
+    def label(option: Any) -> str:
+        return choice_label(battle, side, point, option)
+
+    return {
+        "index": point.index,
+        "turn": point.turn,
+        "kind": point.kind,
+        "kind_text": DECISION_KINDS[point.kind],
+        "policy_choice": label(point.policy_choice),
+        "chosen": label(tried.chosen),
+        "changed": tried.changed,
+        "before": score_payload(tried.before),
+        "after": score_payload(tried.after),
+        "options": [
+            {
+                "label": label(option),
+                "score": score_payload(value),
+                "policy": option == point.policy_choice,
+                "chosen": option == tried.chosen,
+            }
+            for option, value in tried.option_scores
+        ],
+    }
 
 
 # ---- 手动对战（4c） ----

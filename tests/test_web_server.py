@@ -143,3 +143,10 @@ def test_manual_battle(base_url):
         {"config": web_api.example_config(), "side": 0, "decisions": [{"kind": "shield", "shield": True}]},
     )
     assert status == 400 and "这里要回答的是出招" in data["error"]
+
+
+def test_best_response(base_url):
+    status, data = post_json(f"{base_url}/api/best-response", {"config": web_api.example_config(), "side": 0})
+    assert status == 200 and data["search"]["changed"] == 5 and data["result"]["result"]["winner"] == 0
+    status, data = post_json(f"{base_url}/api/best-response", {"config": web_api.example_config(), "side": 3})
+    assert status == 400 and "side" in data["error"]

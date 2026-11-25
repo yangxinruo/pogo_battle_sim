@@ -6,12 +6,14 @@
 
 import copy
 import json
+import re
 from dataclasses import asdict
 
 import pytest
 
 from pogo_sim import web_api
 from pogo_sim.battle_summary import lane_items
+from pogo_sim.best_response import format_best_response_report, search_best_response
 from pogo_sim.config import REPO_ROOT, ConfigError, load_toml, parse_entry, prepare_entry
 from pogo_sim.damage import calculate_damage
 from pogo_sim.gamemaster import load_gamemaster
@@ -562,3 +564,93 @@ def test_prepared_battle_is_cached():
     other = web_api.example_config()
     other["team"][0]["shields"] = 1
     assert web_api.prepared_battle(other) is not a
+
+
+# ---- 搜索应对（4e） ----
+
+
+@pytest.fixture(scope="module")
+def best_payload():
+    """网页搜 Team A 对 Team B 策略的应对，转成 JSON 再读回来。"""
+    return json.loads(json.dumps(web_api.best_response({"config": web_api.example_config(), "side": 0})))
+
+
+def test_best_response_search_summary(best_payload):
+    """和命令行 --best-response 同一个搜索（docs/experiments/gl_3v3_best_response.md）：输 221 → 赢 593。"""
+    search = best_payload["search"]
+    assert (search["side"], search["team"], search["opponent"]) == (0, "Team A", "Team B")
+    assert search["baseline"] == {
+        "outcome": 0, "rating": 221, "short": "输 221",
+        "text": "Team B 赢。评分 221 对 778；剩余 0 只对 3 只；剩余盾 0 对 0；100 回合，对战时间 145 秒（大招每次按 10 秒算）。",
+    }
+    assert (search["best"]["outcome"], search["best"]["rating"], search["best"]["short"]) == (2, 593, "赢 593")
+    assert (search["decisions"], search["examined"], search["changed"], search["trials"]) == (77, 32, 5, 50)
+
+
+def test_best_response_tried_points(best_payload):
+    """试过的每个决定点都在，按搜索的顺序；选项文字和手动对战的按钮一样。"""
+    tried = best_payload["tried"]
+    assert len(tried) == 32
+    assert [(t["turn"], t["kind_text"], t["policy_choice"], t["chosen"]) for t in tried if t["changed"]] == [
+        (1, "出招", "快招 Bubble", "换上 Medicham"),
+        (11, "开盾", "开盾", "不开盾"),
+        (21, "出招", "快招 Counter", "大招 Ice Punch"),
+        (62, "0 回合换人", "不换", "换上 Registeel"),
+        (99, "0 回合换人", "不换", "换上 Azumarill"),
+    ]
+    first = tried[0]
+    assert (first["before"]["short"], first["after"]["short"]) == ("输 221", "输 465")
+    assert [(o["label"], o["score"]["short"], o["policy"], o["chosen"]) for o in first["options"]] == [
+        ("快招 Bubble", "输 221", True, False),
+        ("换上 Medicham", "输 465", False, True),
+        ("换上 Registeel", "输 237", False, False),
+    ]
+    replacement = next(t for t in tried if t["kind"] == "replacement")
+    assert [o["label"] for o in replacement["options"]] == ["换上 Azumarill", "换上 Registeel"]
+    for t in tried:
+        assert sum(o["policy"] for o in t["options"]) == sum(o["chosen"] for o in t["options"]) == 1
+        if not t["changed"]:
+            assert t["chosen"] == t["policy_choice"] and t["before"] == t["after"]
+
+
+def test_best_response_battles(best_payload, payload):
+    """搜索后的这一场：和引擎搜出来的一样，报告是 best-response 的报告；原策略那一场和打一场完全相同。"""
+    battle = web_api.prepared_battle(web_api.example_config())
+    response = search_best_response(battle, 0)
+    result = best_payload["result"]
+    assert (result["result"]["ratings"], result["result"]["turns"]) == (list(response.best.result.ratings), 116)
+    assert result["teams"][0]["policy"] == "逐步试探搜索出来的打法；原策略（起点）是 TeamPolicy，默认参数"
+    assert result["teams"][1]["policy"] == "TeamPolicy，默认参数"
+    report = result["report_markdown"]
+    expected = format_best_response_report(battle, response)
+    seconds = re.compile(r"用时 [\d.]+ 秒")
+    assert seconds.sub("", report) == seconds.sub("", expected)  # 只有用时不同
+    texts = [e["text"] for entry in result["timeline"] for e in entry["events"]]
+    assert sum("best response:" in text for text in texts) == 5  # 4 个决定事件，开盾的原因在对方的大招事件里
+    assert best_payload["baseline"] == payload
+
+
+def test_best_response_other_side():
+    data = web_api.best_response({"config": web_api.example_config(), "side": 1})
+    assert (data["search"]["team"], data["search"]["baseline"]["short"], data["search"]["best"]["short"]) == (
+        "Team B", "赢 778", "赢 785",
+    )
+    assert [(t["turn"], t["policy_choice"], t["chosen"]) for t in data["tried"] if t["changed"]] == [
+        (23, "快招 Mud Shot", "大招 Hydro Cannon"),
+    ]
+    assert data["result"]["teams"][1]["policy"].startswith("逐步试探搜索出来的打法")
+
+
+def test_best_response_errors():
+    with pytest.raises(ConfigError, match="网页：side（搜索哪一方的打法）要是 0 或 1"):
+        web_api.best_response({"config": web_api.example_config(), "side": True})
+    with pytest.raises(ConfigError, match="网页：缺少 side"):
+        web_api.best_response({"config": web_api.example_config()})
+    with pytest.raises(ConfigError, match="不认识的字段 extra"):
+        web_api.best_response({"config": web_api.example_config(), "side": 0, "extra": 1})
+    with pytest.raises(ConfigError, match="网页：要写成表"):
+        web_api.best_response([])
+    bad = _example()
+    bad["team"][0]["member"][0]["species"] = "nope"
+    with pytest.raises(ConfigError, match="Team A 第 1 只（nope）：找不到宝可梦"):
+        web_api.best_response({"config": bad, "side": 0})

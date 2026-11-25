@@ -88,7 +88,7 @@ select { max-width: 100%; }
 
 /* ---- 按钮、错误 ---- */
 
-.actions { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 12px 0; }
 button { padding: 6px 14px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; }
 button:hover { background: #f3f4f6; }
 button:disabled { opacity: 0.5; cursor: default; }
@@ -277,3 +277,21 @@ table.stats th.sortable:hover { background: #e5e7eb; }
 table.stats td.name { text-align: left; }
 table.stats tbody tr:hover { background: var(--side-0-light); }
 table.stats tr.custom-row { background: #fef9c3; }
+
+/* ---- 搜索应对（4e） ---- */
+.br-summary { margin: 4px 0; }
+.br-view { display: inline-flex; gap: 6px; align-items: center; margin: 8px 0; }
+.br-view button.current { background: #eef2ff; border-color: #6366f1; font-weight: 600; }
+.br-options { display: flex; flex-wrap: wrap; gap: 4px; }
+.br-option { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+.br-option.outcome-2 { background: #ecfdf5; }
+.br-option.outcome-1 { background: #f9fafb; }
+.br-option.outcome-0 { background: #fef2f2; }
+.br-option.chosen { border-color: #16a34a; border-width: 2px; font-weight: 600; }
+.br-option .tag { color: var(--muted); font-weight: normal; font-size: 11px; }
+tr.br-changed td { background: #f0fdf4; }
+tr.br-row { cursor: pointer; }
+details.br-all summary { cursor: pointer; margin: 8px 0; }
+.br-mark { stroke: #16a34a; stroke-width: 2; stroke-dasharray: 4 3; }
+.br-mark-label { fill: #16a34a; font-size: 11px; font-weight: 600; }
+.timeline tr.br-changed td { background: #f0fdf4; }

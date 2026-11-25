@@ -30,7 +30,7 @@
 
 - 原策略：Team B 赢。评分 221 对 778；剩余 0 只对 3 只；剩余盾 0 对 0；100 回合，对战时间 145 秒（大招每次按 10 秒算）。
 - 搜索后：Team A 赢。评分 593 对 406；剩余 2 只对 0 只；剩余盾 0 对 0；116 回合，对战时间 192 秒（大招每次按 10 秒算）。
-- Team A 一共做了 77 个决定，其中 32 个有不止一个选项、都试过；改了 5 个。一共打了 50 场，用时 0.4 秒。
+- Team A 一共做了 77 个决定，其中 32 个有不止一个选项、都试过；改了 5 个。一共打了 50 场，用时 0.5 秒。
 
 ## 改了哪些决定
 
@@ -43,6 +43,45 @@
 | 21 | 出招 | fast COUNTER | charged ICE_PUNCH | 赢 521 → 赢 577 | fast COUNTER: 赢 521; charged ICE_PUNCH: 赢 577 |
 | 62 | 0 回合换人 | stay | switch to Registeel | 赢 577 → 赢 588 | stay: 赢 577; switch to Registeel: 赢 588 |
 | 99 | 0 回合换人 | stay | switch to Azumarill | 赢 588 → 赢 593 | stay: 赢 588; switch to Azumarill: 赢 593 |
+
+## 试过的全部决定点
+
+Team A 每个有不止一个选项的决定点一行，按搜索的顺序；改了的加粗。"各选项"的意思同上：之前的决定照当时最好的一场，之后照各自的策略。
+
+| 回合 | 决定 | 原策略 | 搜索后 | 各选项打出来的结果 |
+|---|---|---|---|---|
+| 1 | 出招 | fast BUBBLE | **switch to Medicham** | fast BUBBLE: 输 221; switch to Medicham: 输 465; switch to Registeel: 输 237 |
+| 11 | 开盾 | shield | **no shield** | shield: 输 465; no shield: 赢 521 |
+| 17 | 出招 | fast COUNTER | 同原策略 | fast COUNTER: 赢 521; charged ICE_PUNCH: 输 283 |
+| 19 | 出招 | fast COUNTER | 同原策略 | fast COUNTER: 赢 521; charged ICE_PUNCH: 输 283 |
+| 21 | 出招 | fast COUNTER | **charged ICE_PUNCH** | fast COUNTER: 赢 521; charged ICE_PUNCH: 赢 577 |
+| 21 | 开盾 | shield | 同原策略 | shield: 赢 577; no shield: 输 283 |
+| 33 | 出招 | fast COUNTER | 同原策略 | fast COUNTER: 赢 577; charged ICE_PUNCH: 赢 577; switch to Azumarill: 输 388; switch to Registeel: 输 432 |
+| 33 | 开盾 | shield | 同原策略 | shield: 赢 577; no shield: 输 270 |
+| 34 | 0 回合换人 | stay | 同原策略 | stay: 赢 577; switch to Azumarill: 赢 523; switch to Registeel: 输 432 |
+| 35 | 出招 | fast COUNTER | 同原策略 | fast COUNTER: 赢 577; charged ICE_PUNCH: 赢 577; switch to Azumarill: 赢 523; switch to Registeel: 输 432 |
+| 37 | 出招 | charged ICE_PUNCH | 同原策略 | fast COUNTER: 赢 577; charged ICE_PUNCH: 赢 577; charged PSYCHIC: 赢 577; switch to Azumarill: 赢 523; switch to Registeel: 赢 563 |
+| 38 | 0 回合换人 | stay | 同原策略 | stay: 赢 577; switch to Azumarill: 赢 525; switch to Registeel: 输 414 |
+| 39 | 出招 | fast COUNTER | 同原策略 | fast COUNTER: 赢 577; switch to Azumarill: 赢 525; switch to Registeel: 输 414 |
+| 41 | 出招 | fast COUNTER | 同原策略 | fast COUNTER: 赢 577; switch to Azumarill: 赢 526; switch to Registeel: 输 343 |
+| 43 | 出招 | fast COUNTER | 同原策略 | fast COUNTER: 赢 577; switch to Azumarill: 赢 528; switch to Registeel: 赢 528 |
+| 44 | 倒下后换人 | bring in Azumarill | 同原策略 | bring in Azumarill: 赢 577; bring in Registeel: 输 447 |
+| 45 | 出招 | fast BUBBLE | 同原策略 | fast BUBBLE: 赢 577; switch to Registeel: 赢 533 |
+| 48 | 出招 | fast BUBBLE | 同原策略 | fast BUBBLE: 赢 577; switch to Registeel: 输 466 |
+| 51 | 0 回合换人 | stay | 同原策略 | stay: 赢 577; switch to Registeel: 赢 542 |
+| 52 | 出招 | fast BUBBLE | 同原策略 | fast BUBBLE: 赢 577; switch to Registeel: 赢 542 |
+| 55 | 出招 | fast BUBBLE | 同原策略 | fast BUBBLE: 赢 577; switch to Registeel: 赢 542 |
+| 58 | 出招 | fast BUBBLE | 同原策略 | fast BUBBLE: 赢 577; switch to Registeel: 赢 542 |
+| 61 | 出招 | charged ICE_BEAM | 同原策略 | fast BUBBLE: 赢 577; charged ICE_BEAM: 赢 577; switch to Registeel: 赢 542 |
+| 62 | 0 回合换人 | stay | **switch to Registeel** | stay: 赢 577; switch to Registeel: 赢 588 |
+| 79 | 出招 | charged FOCUS_BLAST | 同原策略 | fast LOCK_ON: 赢 588; charged FOCUS_BLAST: 赢 588 |
+| 94 | 出招 | fast LOCK_ON | 同原策略 | fast LOCK_ON: 赢 588; switch to Azumarill: 赢 534 |
+| 95 | 0 回合换人 | stay | 同原策略 | stay: 赢 588; switch to Azumarill: 赢 547 |
+| 96 | 出招 | fast LOCK_ON | 同原策略 | fast LOCK_ON: 赢 588; switch to Azumarill: 赢 546 |
+| 97 | 出招 | fast LOCK_ON | 同原策略 | fast LOCK_ON: 赢 588; charged FOCUS_BLAST: 赢 588; switch to Azumarill: 赢 544 |
+| 98 | 出招 | charged ZAP_CANNON | 同原策略 | fast LOCK_ON: 赢 588; charged FOCUS_BLAST: 赢 588; charged ZAP_CANNON: 赢 588; switch to Azumarill: 赢 543 |
+| 99 | 0 回合换人 | stay | **switch to Azumarill** | stay: 赢 588; switch to Azumarill: 赢 593 |
+| 116 | 出招 | charged ICE_BEAM | 同原策略 | fast BUBBLE: 赢 590; charged ICE_BEAM: 赢 593 |
 
 ## 搜索后的这一场
 

@@ -80,6 +80,7 @@ class DecisionPoint:
     index: int  # 我方第几个决定，从 0 数
     turn: int
     kind: str  # DECISION_KINDS 的键
+    active: int  # 做决定时我方在场的是第几只（倒下后选人时是倒下的那只）
     options: tuple[Any, ...]  # 可以选的：action 是 FastAction / ChargedAction / SwitchAction；
     #                           shield 是 True / False；zero_turn 是 None（不换）或第几只；replacement 是第几只
     labels: tuple[str, ...]  # 每个选项的说明（英文，和时间线一致），例如 "switch to Medicham"
@@ -127,7 +128,7 @@ class SteeredPolicy:
         chosen = self.forced.get(index, policy_choice)
         if chosen not in options:
             raise ValueError(f"第 {index} 个决定指定的 {chosen!r} 现在不能选（可选：{', '.join(labels)}）")
-        point = DecisionPoint(index, view.turn, kind, options, labels, policy_choice, chosen)
+        point = DecisionPoint(index, view.turn, kind, view.my_team.active, options, labels, policy_choice, chosen)
         self.points.append(point)
         return point
 
@@ -222,14 +223,18 @@ def play(
 
 
 @dataclass(frozen=True)
-class Change:
-    """搜索时改了一个决定。"""
+class Tried:
+    """搜索时试过的一个决定点（有不止一个选项的），不论改没改。"""
 
-    point: DecisionPoint  # 改之前那一场里的这个决定点（chosen 就是原策略的选择）
+    point: DecisionPoint  # 试的时候当前最好的那一场里的这个决定点（chosen 就是原策略的选择）
     option_scores: tuple[tuple[Any, Score], ...]  # 这个决定点每个选项打出来的结果
-    chosen: Any
-    before: Score  # 改之前（当时最好的那一场）
-    after: Score
+    chosen: Any  # 试完以后选的：改了就是更好的那个选项，没改就是原策略的选择
+    before: Score  # 试之前（当时最好的那一场）
+    after: Score  # 试之后；没改时等于 before
+
+    @property
+    def changed(self) -> bool:
+        return self.chosen != self.point.policy_choice
 
 
 @dataclass(frozen=True)
@@ -237,10 +242,19 @@ class BestResponse:
     side: int  # 搜索的是哪一方
     baseline: Trial  # 双方都照原策略
     best: Trial  # 搜索后
-    changes: tuple[Change, ...]
-    examined: int  # 试过的决定点（有不止一个选项的）
+    tried: tuple[Tried, ...]  # 试过的每个决定点（有不止一个选项的），按搜索的顺序
     trials: int  # 一共打了几场（含起点）
     seconds: float
+
+    @property
+    def changes(self) -> tuple[Tried, ...]:
+        """改了的决定点。"""
+        return tuple(t for t in self.tried if t.changed)
+
+    @property
+    def examined(self) -> int:
+        """试过几个决定点。"""
+        return len(self.tried)
 
 
 def search_best_response(battle: TeamBattle, side: int) -> BestResponse:
@@ -252,8 +266,7 @@ def search_best_response(battle: TeamBattle, side: int) -> BestResponse:
     baseline = play(battle, side, {}, evaluators)
     best = baseline
     forced: dict[int, Any] = {}  # 只记改过的；没记的照原策略，重打时会做出同样的选择
-    changes: list[Change] = []
-    examined = 0
+    tried: list[Tried] = []
     trials = 1
 
     index = 0
@@ -262,7 +275,6 @@ def search_best_response(battle: TeamBattle, side: int) -> BestResponse:
         index += 1
         if len(point.options) < 2:
             continue
-        examined += 1
         option_scores = []
         candidate = best
         for option in point.options:
@@ -274,24 +286,29 @@ def search_best_response(battle: TeamBattle, side: int) -> BestResponse:
             option_scores.append((option, trial.score))
             if trial.score > candidate.score:
                 candidate = trial
+        chosen = candidate.points[point.index].chosen
+        tried.append(Tried(point, tuple(option_scores), chosen, best.score, candidate.score))
         if candidate is not best:
-            chosen = candidate.points[point.index].chosen
             forced[point.index] = chosen
-            changes.append(Change(point, tuple(option_scores), chosen, best.score, candidate.score))
             best = candidate
 
     return BestResponse(
         side=side,
         baseline=baseline,
         best=best,
-        changes=tuple(changes),
-        examined=examined,
+        tried=tuple(tried),
         trials=trials,
         seconds=time.perf_counter() - started,
     )
 
 
 # ---- 报告（Markdown） ----
+
+
+def option_results(tried: Tried) -> str:
+    """一个决定点每个选项打出来的结果，例如 "shield: 输 465; no shield: 赢 521"。"""
+    point = tried.point
+    return "; ".join(f"{point.label(option)}: {format_score(value)}" for option, value in tried.option_scores)
 
 
 def format_changes(response: BestResponse) -> str:
@@ -302,7 +319,7 @@ def format_changes(response: BestResponse) -> str:
     rows = []
     for change in response.changes:
         point = change.point
-        options = "; ".join(f"{point.label(option)}: {format_score(value)}" for option, value in change.option_scores)
+        options = option_results(change)
         rows.append([
             str(point.turn),
             DECISION_KINDS[point.kind],
@@ -314,10 +331,21 @@ def format_changes(response: BestResponse) -> str:
     return format_table(header, rows)
 
 
+def format_tried(response: BestResponse) -> str:
+    """试过的全部决定点：一行一个，按搜索的顺序；改了的加粗。"""
+    header = ["回合", "决定", "原策略", "搜索后", "各选项打出来的结果"]
+    rows = []
+    for tried in response.tried:
+        point = tried.point
+        after = f"**{point.label(tried.chosen)}**" if tried.changed else "同原策略"
+        rows.append([str(point.turn), DECISION_KINDS[point.kind], point.label(point.policy_choice), after, option_results(tried)])
+    return format_table(header, rows)
+
+
 def format_best_response_report(
     battle: TeamBattle, response: BestResponse, source: str = "", include_timeline: bool = True
 ) -> str:
-    """完整报告：设置、两队、搜索结果、改了哪些决定、搜索后的这一场。"""
+    """完整报告：设置、两队、搜索结果、改了哪些决定、试过的全部决定点、搜索后的这一场。"""
     side = response.side
     me = battle.teams[side].setup.name
     opponent = battle.teams[1 - side].setup.name
@@ -352,6 +380,13 @@ def format_best_response_report(
         "（之前的决定照当时最好的一场，之后照各自的策略）。后面的改动是在前面改过的基础上试的。"
     )
     lines += ["", format_changes(response), ""]
+
+    lines += ["## 试过的全部决定点", ""]
+    lines.append(
+        f"{me} 每个有不止一个选项的决定点一行，按搜索的顺序；改了的加粗。"
+        "\"各选项\"的意思同上：之前的决定照当时最好的一场，之后照各自的策略。"
+    )
+    lines += ["", format_tried(response), ""]
 
     lines += ["## 搜索后的这一场", ""]
     lines.append("以下各节都是搜索后的这一场。时间线里，改过的决定的原因写成 best response: …（policy would …）。")
