@@ -1,4 +1,4 @@
-"""本地网页界面（第 4 步）：启动一个只给本机用的服务器，在浏览器里选队伍、打 3v3、看时间线。
+"""本地网页界面（第 4 步）：启动一个只给本机用的服务器，在浏览器里选队伍、打 3v3、看时间线、排能力值。
 
 用法（在仓库根目录）：
     .venv/bin/python -m tools.run_web                  # 启动后自动打开 http://127.0.0.1:8000
@@ -12,6 +12,9 @@
     GET  /api/species?league=1500&custom=a.toml
                                        全部宝可梦和招式，以及 PvPoke 在这个联盟推荐的配招
                                        （custom 可以写几次，是 data/custom/ 里的文件名）
+    GET  /api/stats?league=1500&season=pvpoke&custom=a.toml
+                                       能力值排序：每只的 CP、等级、IV、实际能力值、坦度
+                                       （一个联盟第一次打开时要算几秒，之后读 .cache/ 里的缓存）
     POST /api/build                    一只宝可梦按赛季规则建配置
     POST /api/team-battle              打一场 3v3
     POST /api/manual-battle            手动对战：按玩家到现在的决定重打到下一个要玩家决定的地方
@@ -45,6 +48,9 @@ STATIC_TYPES = {
 GET_API: dict[str, Callable[[dict[str, list[str]]], Any]] = {
     "/api/options": lambda query: web_api.options(),
     "/api/species": lambda query: web_api.species_catalog(query.get("custom", []), query.get("league", [None])[0]),
+    "/api/stats": lambda query: web_api.stat_table_payload(
+        query.get("league", [None])[0], query.get("season", [None])[0], query.get("custom", [])
+    ),
 }
 POST_API: dict[str, Callable[[Any], Any]] = {
     "/api/build": web_api.build_member,

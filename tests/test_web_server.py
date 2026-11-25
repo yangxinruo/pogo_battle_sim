@@ -57,6 +57,12 @@ def test_static_files(base_url):
     assert status == 200 and content_type.startswith("text/javascript")
     status, content_type, _ = request(f"{base_url}/style.css")
     assert status == 200 and content_type.startswith("text/css")
+    status, content_type, body = request(f"{base_url}/stats.html")
+    assert status == 200 and content_type.startswith("text/html")
+    assert b'<script src="common.js"></script>' in body and b'<script src="stats.js"></script>' in body
+    for name in ("common.js", "stats.js"):
+        status, content_type, _ = request(f"{base_url}/{name}")
+        assert status == 200 and content_type.startswith("text/javascript")
 
 
 @pytest.mark.parametrize("path", [
@@ -94,6 +100,14 @@ def test_team_battle(base_url):
     status, data = post_json(f"{base_url}/api/team-battle", web_api.example_config())
     assert status == 200
     assert (data["result"]["winner"], data["result"]["ratings"], data["result"]["turns"]) == (1, [221, 778], 100)
+
+
+def test_stats_errors(base_url):
+    # 正常的请求要算全部宝可梦（或读 .cache/），在 test_web_api.py 里只算几只来测；这里只测写错时回 400
+    status, _, body = request(f"{base_url}/api/stats?league=1500&season=nope")
+    assert status == 400 and "season 要是" in json.loads(body)["error"]
+    status, _, body = request(f"{base_url}/api/stats?league=1234&season=pvpoke")
+    assert status == 400 and "league 要是" in json.loads(body)["error"]
 
 
 def test_build(base_url):

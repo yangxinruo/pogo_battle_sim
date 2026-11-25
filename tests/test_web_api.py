@@ -351,6 +351,55 @@ def test_species_catalog_league():
         web_api.species_catalog(["../gamemaster.json"])
 
 
+# ---- 能力值排序（4d） ----
+
+
+def test_stat_table_payload(tmp_path):
+    ids = ["azumarill", "bastiodon_shadow", "darkrai", "froslass_mega"]
+    data = web_api.stat_table_payload("1500", "pvpoke", ["mega_froslass.toml"], cache_dir=tmp_path, species_ids=ids)
+    json.dumps(data)  # 能转成 JSON
+    assert (data["league"], data["season"], data["computed"]) == (1500, "pvpoke", 4)
+    rows = {row["id"]: row for row in data["rows"]}
+    assert set(rows) == {"azumarill", "bastiodon_shadow", "froslass_mega"}
+
+    azumarill = rows["azumarill"]
+    build = web_api.build_member({"league": 1500, "season": "pvpoke", "member": {
+        "species": "azumarill", "fast": "BUBBLE", "charged": ["ICE_BEAM"]}})
+    # 和网页上不填 IV、等级时建的配置一样
+    assert (azumarill["cp"], azumarill["level"], azumarill["ivs"], azumarill["hp"]) == (
+        build["cp"], build["level"], build["ivs"], build["hp"])
+    assert azumarill["def"] == pytest.approx(build["def"])
+    assert azumarill["bulk"] == azumarill["def"] * azumarill["hp"]
+    assert azumarill["stat_product"] == azumarill["atk"] * azumarill["def"] * azumarill["hp"]
+    assert azumarill["base"] == [112, 152, 225]
+    # 宝可梦的说明和宝可梦列表一样
+    catalog = {s["id"]: s for s in web_api.species_catalog(["mega_froslass.toml"], "1500")["species"]}
+    for key in ("name", "types", "tags", "released", "custom", "mega", "rank", "mega_rank", "search"):
+        assert azumarill[key] == catalog["azumarill"][key]
+        assert rows["froslass_mega"][key] == catalog["froslass_mega"][key]
+    assert rows["froslass_mega"]["custom"] and rows["bastiodon_shadow"]["shadow"]
+
+    assert [s["id"] for s in data["skipped"]] == ["darkrai"]
+    assert data["skipped"][0]["name"] == "Darkrai" and "CP 就超过 1500" in data["skipped"][0]["reason"]
+    assert data["shadow_multipliers"] == {"atk": 1.2, "def": 0.83333331}
+
+    # 第二次读缓存
+    again = web_api.stat_table_payload("1500", "pvpoke", ["mega_froslass.toml"], cache_dir=tmp_path, species_ids=ids)
+    assert again["computed"] == 0 and again["rows"] == data["rows"]
+
+
+@pytest.mark.parametrize("league, season, custom, message", [
+    ("1234", "pvpoke", [], "league 要是 500 / 1500 / 2500 / 10000"),
+    (None, "pvpoke", [], "league 要是"),
+    ("1500", "nope", [], "season 要是 pvpoke"),
+    ("1500", None, [], "season 要是"),
+    ("1500", "pvpoke", ["../gamemaster.json"], "data/custom/ 里没有覆盖文件"),
+])
+def test_stat_table_payload_errors(tmp_path, league, season, custom, message):
+    with pytest.raises(ConfigError, match=message):
+        web_api.stat_table_payload(league, season, custom, cache_dir=tmp_path, species_ids=["azumarill"])
+
+
 # ---- 对位分段和过程图（4b） ----
 
 

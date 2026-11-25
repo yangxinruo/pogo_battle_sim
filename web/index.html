@@ -9,6 +9,7 @@
 <body>
   <!-- 页面只负责填表和显示；建配置、检查、对战都在 Python 引擎里（pogo_sim/web_api.py）。 -->
   <header>
+    <nav class="pages"><a class="current" href="index.html">打一场 3v3</a><a href="stats.html">能力值排序</a></nav>
     <h1>PvP 对战模拟器 · 打一场 3v3</h1>
     <p class="muted">双方都用 3v3 策略 TeamPolicy（docs/mechanics.md 13.7）。不填 IV 和等级时按赛季规则取 IV 排名第 1 和合法的最高等级。</p>
   </header>
@@ -43,6 +44,7 @@
     <section id="result" hidden></section>
   </main>
 
+  <script src="common.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

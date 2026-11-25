@@ -181,6 +181,14 @@ def check_charged_moves(species: Species, charged_moves: tuple[Move, ...]) -> No
         )
 
 
+def species_stats(species: Species, ivs: IVs, level: float) -> BattleStats:
+    """这只宝可梦在这个等级和 IV 下的实际攻击、防御、HP（不含暗影倍率）。脱壳忍者的 HP 固定为 10。"""
+    stats = calculate_battle_stats(species.base_stats, ivs, level)
+    if species.dex == SHEDINJA_DEX:
+        stats = replace(stats, hp=SHEDINJA_HP)
+    return stats
+
+
 def make_combatant(gm: GameMaster, build: PokemonBuild, index: int) -> Combatant:
     """按配置建立对战开始时的状态（满 HP、0 能量、0 能力等级）。index 是属于哪一方（0 或 1）。
 
@@ -196,9 +204,7 @@ def make_combatant(gm: GameMaster, build: PokemonBuild, index: int) -> Combatant
 
     mega_level = resolve_mega_level(species, build.mega_level)
 
-    stats = calculate_battle_stats(species.base_stats, build.ivs, build.level)
-    if species.dex == SHEDINJA_DEX:
-        stats = replace(stats, hp=SHEDINJA_HP)
+    stats = species_stats(species, build.ivs, build.level)
     chance_meters = {
         move.move_id: initial_chance_meter(move.effect.chance)
         for move in charged_moves

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PvP 对战模拟器 · 能力值排序</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 页面只负责筛选、排序和显示；每只的等级、IV、能力值都在 Python 里算（pogo_sim/stat_table.py、web_api.stat_table_payload）。 -->
+  <header>
+    <nav class="pages"><a href="index.html">打一场 3v3</a><a class="current" href="stats.html">能力值排序</a></nav>
+    <h1>PvP 对战模拟器 · 能力值排序</h1>
+    <p class="muted" id="intro">每只按赛季规则取这个联盟 IV 排名第 1 和合法的最高等级（和打一场时不填 IV、等级一样）。坦度 = 防 × HP；能力值乘积 = 攻 × 防 × HP。</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>设置</h2>
+      <div class="row">
+        <label>联盟 <select id="league"></select></label>
+        <label>赛季规则 <select id="season"></select></label>
+      </div>
+      <div id="custom-files"></div>
+    </section>
+
+    <section class="card">
+      <h2>筛选</h2>
+      <div class="row" id="filters"></div>
+      <h2 class="sub">自定义一列</h2>
+      <div class="row" id="formula"></div>
+    </section>
+
+    <div class="error" id="error" hidden></div>
+
+    <section class="card">
+      <div class="muted" id="status"></div>
+      <div id="skipped"></div>
+      <div class="stats-wrap" id="stats-table"></div>
+      <div id="more"></div>
+    </section>
+  </main>
+
+  <script src="common.js"></script>
+  <script src="stats.js"></script>
+</body>
+</html>

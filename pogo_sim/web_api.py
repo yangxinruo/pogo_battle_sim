@@ -9,6 +9,7 @@ tools/run_web.py 把这些函数转发成 HTTP 接口。
 - build_member(raw)：一只宝可梦按赛季规则建配置（CP、等级、IV、说明）
 - team_battle(raw)：打一场 3v3，返回结果、每只的情况、换人和开盾、逐回合时间线、Markdown 报告
 - manual_battle(raw)：手动对战，玩家操作一队；重打到下一个要玩家决定的地方，返回局面和能选什么（4c）
+- stat_table_payload(league, season, custom_files)：能力值排序，每只的 CP、等级、IV、实际能力值、坦度（4d）
 
 网页发来的配置和 3v3 配置文件（team_battle.py 开头）写法一样、键也一样，只有一处不同：
 覆盖文件只能从 data/custom/ 里选，写文件名（例如 "mega_froslass.toml"），不能写任意路径。
@@ -17,11 +18,14 @@ tools/run_web.py 把这些函数转发成 HTTP 接口。
 
 import json
 import re
+import threading
+import time
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, replace
 from functools import lru_cache
 from math import ceil
+from pathlib import Path
 from typing import Any, get_args, get_type_hints
 
 from pogo_sim.battle import Battle, BattleResult
@@ -53,6 +57,8 @@ from pogo_sim.rules import BattleRules
 from pogo_sim.rankings import RankedPokemon, load_rankings
 from pogo_sim.rules import PVPOKE_COMPAT
 from pogo_sim.season import LEAGUE_NAMES, SEASON_PRESETS, league_name
+from pogo_sim.stat_table import CACHE_DIR as STAT_CACHE_DIR
+from pogo_sim.stat_table import stat_table
 from pogo_sim.team_battle import (
     SWITCH_KINDS,
     TeamBattle,
@@ -258,13 +264,33 @@ def species_catalog(custom_files: Any = (), league: Any = None) -> dict[str, Any
     """
     names = list(custom_files)
     gm = load_gamemaster(custom_files=custom_paths(names))
-    base_ids = set(load_gamemaster().species) if names else set(gm.species)
     league_cp = _parse_league(league)
     rankings = league_rankings(league_cp) if league_cp is not None else {}
-    normal_rank = {species_id: entry.rank for species_id, entry in rankings.get("all", {}).items()}
-    mega_rank = {species_id: entry.rank for species_id, entry in rankings.get("mega", {}).items()}
+    describe = _species_describer(gm, names, rankings)
     species = [
         {
+            **describe(s),
+            "fast": list(s.fast_move_ids),
+            "charged": list(s.charged_move_ids),
+            "extra_charged": list(s.extra_charged_move_ids) if s.is_mega else [],
+            "recommended": recommended_moveset(rankings, s.species_id),
+        }
+        for s in gm.species.values()
+    ]
+    moves = {move_id: _move_info(move) for move_id, move in gm.moves.items()}
+    return {"species": species, "moves": moves}
+
+
+def _species_describer(
+    gm: GameMaster, custom_names: list[str], rankings: dict[str, dict[str, RankedPokemon]]
+) -> Callable[[Species], dict[str, Any]]:
+    """宝可梦列表和能力值表共用的说明：名字、图鉴编号、属性、tags、是否实装、是否覆盖文件新加的、排名、搜索文字。"""
+    base_ids = set(load_gamemaster().species) if custom_names else set(gm.species)
+    normal_rank = {species_id: entry.rank for species_id, entry in rankings.get("all", {}).items()}
+    mega_rank = {species_id: entry.rank for species_id, entry in rankings.get("mega", {}).items()}
+
+    def describe(s: Species) -> dict[str, Any]:
+        return {
             "id": s.species_id,
             "name": s.name,
             "dex": s.dex,
@@ -273,18 +299,84 @@ def species_catalog(custom_files: Any = (), league: Any = None) -> dict[str, Any
             "released": s.released,
             "custom": s.species_id not in base_ids,
             "mega": s.is_mega,
-            "fast": list(s.fast_move_ids),
-            "charged": list(s.charged_move_ids),
-            "extra_charged": list(s.extra_charged_move_ids) if s.is_mega else [],
-            "recommended": recommended_moveset(rankings, s.species_id),
+            "shadow": s.is_shadow,
             "rank": normal_rank.get(s.species_id),
             "mega_rank": mega_rank.get(s.species_id) if s.is_mega else None,
             "search": search_text(s),
         }
-        for s in gm.species.values()
+
+    return describe
+
+
+# ---- 能力值排序（4d） ----
+
+# 同时来两个请求时一个一个算：第二个等第一个算完，直接读缓存。
+_STAT_TABLE_LOCK = threading.Lock()
+
+
+def stat_table_payload(
+    league: Any,
+    season: Any,
+    custom_files: Any = (),
+    *,
+    cache_dir: Path = STAT_CACHE_DIR,
+    species_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """能力值排序（4d，docs/mechanics.md 14.6）：每只宝可梦在这个联盟的 CP、等级、IV、实际能力值、坦度。
+
+    每只的等级和 IV 按赛季规则选（stat_table.py）；攻击、防御含暗影倍率。
+    筛选、排序、自定义公式（攻^a × 防^b × HP^c）在网页上做，只是显示，不改数据。
+    rows：每只一行，宝可梦的说明和 species_catalog 一样，另有 cp、level、ivs、atk、def、hp、
+    bulk（坦度 = 防 × HP）、stat_product（攻 × 防 × HP）、base（种族值 攻/防/HP）。
+    skipped：在这个联盟没有合法配置的，和原因。shadow_multipliers：攻击、防御乘的暗影倍率（网页上说明用）。
+    computed、seconds：这次新算了几只、花了几秒（一个联盟第一次打开时要算，之后读本地缓存）。
+    cache_dir、species_ids 只给测试用。
+    """
+    league_cp = _parse_league(league)
+    if league_cp not in LEAGUE_NAMES:
+        choices = " / ".join(str(cp) for cp in LEAGUE_NAMES)
+        raise ConfigError(f"{WHERE}：league 要是 {choices}，得到 {league!r}")
+    if season not in SEASON_PRESETS:
+        raise ConfigError(f"{WHERE}：season 要是 {' / '.join(SEASON_PRESETS)}，得到 {season!r}")
+    names = list(custom_files)
+    paths = [REPO_ROOT / path for path in custom_paths(names)]
+
+    start = time.perf_counter()
+    with _STAT_TABLE_LOCK:
+        table = stat_table(league_cp, season, paths, rules=PVPOKE_COMPAT, cache_dir=cache_dir, species_ids=species_ids)
+    seconds = time.perf_counter() - start
+
+    gm = load_gamemaster(custom_files=paths)
+    describe = _species_describer(gm, names, league_rankings(league_cp))
+    rows = []
+    for row in table.rows:
+        species = gm.species[row.species_id]
+        base = species.base_stats
+        rows.append({
+            **describe(species),
+            "cp": row.cp,
+            "level": row.level,
+            "ivs": [row.ivs.atk, row.ivs.def_, row.ivs.hp],
+            "atk": row.atk,
+            "def": row.def_,
+            "hp": row.hp,
+            "bulk": row.bulk,
+            "stat_product": row.stat_product,
+            "base": [base.atk, base.def_, base.hp],
+        })
+    skipped = [
+        {"id": item.species_id, "name": gm.species[item.species_id].name, "reason": item.reason}
+        for item in table.skipped
     ]
-    moves = {move_id: _move_info(move) for move_id, move in gm.moves.items()}
-    return {"species": species, "moves": moves}
+    return {
+        "league": league_cp,
+        "season": season,
+        "rows": rows,
+        "skipped": skipped,
+        "shadow_multipliers": {"atk": PVPOKE_COMPAT.shadow_attack, "def": PVPOKE_COMPAT.shadow_defense},
+        "computed": table.computed,
+        "seconds": round(seconds, 2),
+    }
 
 
 # ---- 一只宝可梦 ----

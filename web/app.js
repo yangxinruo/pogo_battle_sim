@@ -23,55 +23,7 @@ const state = {
   showDecisions: true, // 时间线里显示决定和原因
 };
 
-// ---- 小工具 ----
-
-/** 建一个元素。attrs 里 on* 是事件，class 是类名；children 可以是元素、文字或数组。 */
-function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (value === undefined || value === null || value === false) continue;
-    if (key === "class") node.className = value;
-    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-    else if (key === "value") node.value = value;
-    else node.setAttribute(key, value === true ? "" : value);
-  }
-  for (const child of children.flat()) {
-    if (child === null || child === undefined || child === false) continue;
-    node.append(child instanceof Node ? child : String(child));
-  }
-  return node;
-}
-
-/** 下拉框。choices：[[值, 文字], ...]。 */
-function select(choices, current, onChange, attrs = {}) {
-  const node = el("select", {...attrs, onchange: (e) => onChange(e.target.value)},
-    choices.map(([value, text]) => el("option", {value: String(value)}, text)));
-  node.value = String(current ?? "");
-  return node;
-}
-
-/** 调接口。body 为 undefined 时是 GET，否则 POST JSON。出错时抛出带服务器说明的 Error。 */
-async function api(path, body) {
-  const init = body === undefined ? {} : {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(body),
-  };
-  const response = await fetch(path, init);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-  return data;
-}
-
-function showError(message) {
-  const box = document.getElementById("error");
-  box.textContent = message;
-  box.hidden = !message;
-}
-
-function setStatus(text) {
-  document.getElementById("status").textContent = text;
-}
+// ---- 小工具（其余在 common.js） ----
 
 function memberKey(side, slot) {
   return `${side}-${slot}`;
@@ -173,11 +125,6 @@ function speciesFacts(species) {
   return facts.join(" · ");
 }
 
-function typeDots(types) {
-  return el("span", {class: "type-dots"},
-    types.map((type) => el("i", {style: `background: ${TYPE_COLORS[type] ?? "#9ca3af"}`, title: type})));
-}
-
 function moveText(moveId) {
   const move = state.catalog.moves[moveId];
   if (!move) return `${moveId}（没有这个招式）`;
@@ -270,12 +217,6 @@ async function reloadCatalog() {
 // 选好一只以后，旁边的"形态"下拉框列出同一图鉴编号的各形态（普通、暗影、Mega……），可以直接换。
 
 const PICKER_LIMIT = 100; // 下拉框里最多列出几个（太多时继续输入缩小范围）
-
-/** 和 web_api.normalize_search 一样：小写、去掉重音、标点换成空格。 */
-function normalizeSearch(text) {
-  return text.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, " ").trim();
-}
 
 /** 搜宝可梦，返回排好序的列表。
  *  排序：名字以输入开头的最前；其次每个词都是某个词的开头；然后按 PvPoke 普通排名（排名外的在后面）、图鉴顺序。 */
@@ -1124,11 +1065,6 @@ function downloadReport() {
 // 所以"撤销上一步"就是去掉最后一个决定。这里只负责显示和把你点的选项发回去。
 
 const MANUAL_KEY = "pogo_sim.manual.v1";
-const TYPE_COLORS = {
-  normal: "#a8a77a", fire: "#ee8130", water: "#6390f0", electric: "#f7d02c", grass: "#7ac74c", ice: "#96d9d6",
-  fighting: "#c22e28", poison: "#a33ea1", ground: "#e2bf65", flying: "#a98ff3", psychic: "#f95587", bug: "#a6b91a",
-  rock: "#b6a136", ghost: "#735797", dragon: "#6f35fc", dark: "#705746", steel: "#b7b7ce", fairy: "#d685ad",
-};
 
 function renderManualSideSelect() {
   const select = document.getElementById("manual-side");

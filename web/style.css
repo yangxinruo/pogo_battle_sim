@@ -254,3 +254,26 @@ button.small { padding: 2px 8px; font-size: 12px; }
 .keys { margin-top: 8px; font-size: 12px; }
 .log .ev { font-size: 12px; }
 .ev.fresh { background: #fef9c3; }
+
+/* ---- 页面之间的导航 ---- */
+
+.pages { display: flex; gap: 4px; margin-bottom: 8px; }
+.pages a { padding: 4px 12px; border-radius: 6px; color: var(--muted); text-decoration: none; border: 1px solid var(--border); background: #fff; }
+.pages a:hover { color: #111827; }
+.pages a.current { color: #fff; background: #111827; border-color: #111827; }
+
+/* ---- 能力值排序（stats.html） ---- */
+
+h2.sub { margin-top: 16px; }
+#filters, #formula { gap: 8px 16px; }
+input.top-n { width: 5em; }
+input.weight { width: 4em; }
+.stats-wrap { overflow: auto; max-height: 75vh; margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; }
+table.stats { font-size: 13px; }
+table.stats thead th { position: sticky; top: 0; z-index: 1; text-align: right; }
+table.stats thead th:nth-child(2) { text-align: left; }
+table.stats th.sortable { cursor: pointer; user-select: none; }
+table.stats th.sortable:hover { background: #e5e7eb; }
+table.stats td.name { text-align: left; }
+table.stats tbody tr:hover { background: var(--side-0-light); }
+table.stats tr.custom-row { background: #fef9c3; }
