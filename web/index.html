@@ -28,10 +28,17 @@
     <section class="actions">
       <button class="primary" id="run">打一场</button>
       <button id="reset">恢复例子队伍</button>
+      <span class="manual-start">
+        <label>手动对战：我操作 <select id="manual-side"></select></label>
+        <button id="manual-start">开始手动对战</button>
+        <button id="manual-resume" hidden>继续上次的手动对战</button>
+      </span>
       <span class="muted" id="status"></span>
     </section>
 
     <div class="error" id="error" hidden></div>
+
+    <section id="arena" hidden></section>
 
     <section id="result" hidden></section>
   </main>

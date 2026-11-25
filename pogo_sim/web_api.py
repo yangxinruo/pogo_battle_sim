@@ -17,7 +17,7 @@ tools/run_web.py 把这些函数转发成 HTTP 接口。
 
 import json
 from collections.abc import Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from functools import lru_cache
 from math import ceil
 from typing import Any, get_args, get_type_hints
@@ -582,7 +582,8 @@ def manual_question_payload(team_battle: TeamBattle, game: ManualGame, side: int
     - question：第几个决定、第几回合、问的是什么（kind、kind_text）、能选什么（options，每个带按钮文字 label）
     - sides：双方现在的状态（_side_state）；turn、elapsed_ms
     - damage：出招的问题里，伤害参考（damage_preview）
-    - events：到现在为止结算过的事件（不含双方的决定和原因：对方的打算不能提前看到，打完以后再看）
+    - events：到现在为止结算过的事件（不含双方的决定和原因，开盾的原因也去掉：对方的打算不能提前看到，
+      打完以后在时间线和报告里看）
 
     开盾的问题里，对方的大招还没结算，不告诉玩家是哪一招；对方在场那只的能量显示这一回合开始时的值
     （它的能量已经扣掉了大招的能量，看了就知道是哪一招）。
@@ -614,5 +615,9 @@ def manual_question_payload(team_battle: TeamBattle, game: ManualGame, side: int
         "min_charge": battle.rules.min_charge,
         "sides": sides,
         "damage": damage_preview(me, opponent_active, battle.rules) if question.kind == "action" else None,
-        "events": [event_payload(e, names) for e in battle.events if not isinstance(e, DecisionEvent)],
+        "events": [
+            event_payload(replace(e, shield_reason=None) if isinstance(e, MoveEvent) else e, names)
+            for e in battle.events
+            if not isinstance(e, DecisionEvent)
+        ],
     }

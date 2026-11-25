@@ -18,7 +18,8 @@ const state = {
   buildTimers: new Map(),
   buildSeq: new Map(), // 每只最新一次建配置请求的序号：旧请求的结果晚到时丢掉
   openDetails: new Set(), // 展开了"更多设置"的是哪几只（重新画这一只时保持展开）
-  result: null, // POST /api/team-battle 的结果
+  result: null, // POST /api/team-battle 的结果（手动对战打完以后是那一场的结果）
+  manual: null, // 手动对战：{config, side, decisions, data（服务器最近一次的回答）, seenEvents, pending}
   showDecisions: true, // 时间线里显示决定和原因
 };
 
@@ -257,6 +258,7 @@ async function reloadCatalog() {
 // ---- 两队 ----
 
 function renderTeams() {
+  renderManualSideSelect();
   document.getElementById("teams").replaceChildren(...SIDES.map(renderTeam));
   for (const side of SIDES) {
     state.config.team[side].member.forEach((_, slot) => renderBuild(side, slot));
@@ -273,7 +275,7 @@ function renderTeam(side) {
         class: "team-name",
         value: team.name,
         title: "队名（两队不能同名）",
-        oninput: (e) => { team.name = e.target.value; configChanged(); },
+        oninput: (e) => { team.name = e.target.value; configChanged(); renderManualSideSelect(); },
       }),
       select(shields, team.shields, (v) => { team.shields = Number(v); configChanged(); }),
       select(options.switching.map((s) => [s.key, s.name]), team.policy.switching,
@@ -987,6 +989,384 @@ function downloadReport() {
   URL.revokeObjectURL(url);
 }
 
+// ---- 手动对战（4c） ----
+//
+// 自己操作一队，和另一队的 TeamPolicy 打（回合制：每个要你决定的地方停下来等你点）。
+// 你到现在做的每个决定存在 state.manual.decisions 里；每点一次，就把整串决定发给服务器（/api/manual-battle），
+// 服务器从第 1 回合重打到下一个要你决定的地方，返回局面、能选什么和伤害表（pogo_sim/manual.py、web_api.manual_battle）。
+// 所以"撤销上一步"就是去掉最后一个决定。这里只负责显示和把你点的选项发回去。
+
+const MANUAL_KEY = "pogo_sim.manual.v1";
+const TYPE_COLORS = {
+  normal: "#a8a77a", fire: "#ee8130", water: "#6390f0", electric: "#f7d02c", grass: "#7ac74c", ice: "#96d9d6",
+  fighting: "#c22e28", poison: "#a33ea1", ground: "#e2bf65", flying: "#a98ff3", psychic: "#f95587", bug: "#a6b91a",
+  rock: "#b6a136", ghost: "#735797", dragon: "#6f35fc", dark: "#705746", steel: "#b7b7ce", fairy: "#d685ad",
+};
+
+function renderManualSideSelect() {
+  const select = document.getElementById("manual-side");
+  if (!select || !state.config) return;
+  const current = select.value || "0";
+  select.replaceChildren(...SIDES.map((side) => el("option", {value: String(side)}, state.config.team[side].name || `第 ${side} 方`)));
+  select.value = current;
+}
+
+/** 记住进行中的手动对战（配置、哪一方、到现在的决定），刷新页面以后可以接着打。 */
+function saveManual() {
+  if (state.manual) {
+    const {config, side, decisions} = state.manual;
+    localStorage.setItem(MANUAL_KEY, JSON.stringify({config, side, decisions}));
+  }
+  updateResumeButton();
+}
+
+function updateResumeButton() {
+  document.getElementById("manual-resume").hidden = Boolean(state.manual) || !localStorage.getItem(MANUAL_KEY);
+}
+
+function startManual() {
+  const side = Number(document.getElementById("manual-side").value);
+  state.manual = {config: requestConfig(), side, decisions: [], data: null, seenEvents: 0, pending: false};
+  saveManual();
+  document.getElementById("result").hidden = true;
+  stepManual();
+}
+
+function resumeManual() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(MANUAL_KEY) ?? "null");
+  } catch {
+    saved = null;
+  }
+  if (!saved?.config || !Array.isArray(saved.decisions)) { // 没有保存的进度（或者坏了）
+    localStorage.removeItem(MANUAL_KEY);
+    updateResumeButton();
+    return;
+  }
+  state.manual = {...saved, data: null, seenEvents: Infinity, pending: false}; // 接着打：已有的事件不再播放动画
+  document.getElementById("result").hidden = true;
+  stepManual();
+}
+
+function quitManual() {
+  state.manual = null;
+  localStorage.removeItem(MANUAL_KEY);
+  updateResumeButton();
+  document.getElementById("arena").hidden = true;
+}
+
+/** 做一个决定（decision 为 undefined 时只是按现有的决定重打一遍），请服务器重打到下一个要你决定的地方。 */
+async function stepManual(decision) {
+  const manual = state.manual;
+  if (!manual || manual.pending) return;
+  if (decision) manual.decisions.push(decision);
+  manual.pending = true;
+  showError("");
+  try {
+    const data = await api("/api/manual-battle", {config: manual.config, side: manual.side, decisions: manual.decisions});
+    const before = manual.seenEvents; // 这之后的事件是刚才发生的（高亮、播放动画）
+    manual.data = data;
+    saveManual();
+    renderArena(before);
+    if (data.status === "finished") {
+      state.result = data.result;
+      renderResult();
+    }
+  } catch (e) {
+    if (decision) manual.decisions.pop();
+    showError(e.message);
+  } finally {
+    manual.pending = false;
+  }
+}
+
+function undoManual() {
+  const manual = state.manual;
+  if (!manual || manual.pending || manual.decisions.length === 0) return;
+  manual.decisions.pop();
+  manual.seenEvents = Infinity; // 撤销以后不播放动画
+  document.getElementById("result").hidden = true;
+  stepManual();
+}
+
+function restartManual() {
+  if (!state.manual || !confirm("从头再打一次？现在这一场的决定会全部清掉。")) return;
+  state.manual.decisions = [];
+  state.manual.data = null;
+  state.manual.seenEvents = 0;
+  document.getElementById("result").hidden = true;
+  stepManual();
+}
+
+/** 把一个选项（服务器给的，带 label）变成发回去的决定。 */
+function decisionFrom(option, charge = 1) {
+  const {kind, action, move_id, to, shield} = option;
+  return {kind, action, move_id, charge, to, shield};
+}
+
+// ---- 对战区 ----
+
+function renderArena(seenBefore) {
+  const manual = state.manual;
+  const data = manual.data;
+  const arena = document.getElementById("arena");
+  arena.hidden = false;
+  const me = manual.side;
+  const them = 1 - me;
+  const header = el("div", {class: "arena-head"},
+    el("h2", {}, `手动对战：你操作 ${manual.config.team[me].name}，对手是 ${manual.config.team[them].name}（TeamPolicy）`),
+    el("div", {class: "arena-buttons"},
+      el("button", {onclick: undoManual, disabled: manual.decisions.length === 0}, "撤销上一步"),
+      el("button", {onclick: restartManual}, "从头再打"),
+      el("button", {onclick: quitManual}, "结束手动对战"),
+    ),
+  );
+  if (data.status === "finished") {
+    const r = data.result;
+    arena.replaceChildren(header, el("div", {class: "card"},
+      el("p", {class: "outcome"}, r.outcome),
+      el("p", {class: "muted"}, `你一共做了 ${data.decisions} 个决定。下面是这一场的完整结果：过程图、对位分段，以及对方每个决定的原因。`),
+    ));
+    return;
+  }
+  const newEvents = data.events.slice(seenBefore);
+  manual.seenEvents = data.events.length;
+  arena.replaceChildren(
+    header,
+    el("p", {class: "muted"},
+      `第 ${data.turn} 回合 · 对战时间 ${clock(data.elapsed_ms)} · 第 ${data.question.index + 1} 个决定。` +
+      "队伍用的是开始手动对战时填的配置；对方的打算（决定和原因）打完以后才能看。"),
+    el("div", {class: "field"},
+      renderSideState(data, me, "你"),
+      renderSideState(data, them, "对方"),
+    ),
+    renderQuestion(data),
+    renderLog(data, newEvents),
+  );
+  animateEvents(newEvents, data);
+}
+
+function typeColor(types, i) {
+  return TYPE_COLORS[types[Math.min(i, types.length - 1)]] ?? "#9ca3af";
+}
+
+function energyBar(member) {
+  const ticks = member.charged.map((c) => el("span", {class: "tick", style: `left: ${c.energy}%`, title: `${c.name} ${c.energy}`}));
+  return el("span", {class: "energy-bar"},
+    el("span", {class: "energy-fill", style: `width: ${member.energy}%`}), ticks);
+}
+
+function chargedStatus(member) {
+  return member.charged.map((c) => el("span", {class: `move-status ${c.ready ? "ready" : ""}`},
+    `${c.name} ${c.energy}：`,
+    c.ready ? "够了" : c.fast_needed === null ? "不够" : `还差 ${c.fast_needed} 次快招`));
+}
+
+function renderSideState(data, side, who) {
+  const state_ = data.sides[side];
+  const active = state_.members[state_.active];
+  const bench = state_.members.filter((m) => m.slot !== state_.active);
+  const stages = [];
+  if (active.atk_stage) stages.push(`攻 ${active.atk_stage > 0 ? "+" : ""}${active.atk_stage}`);
+  if (active.def_stage) stages.push(`防 ${active.def_stage > 0 ? "+" : ""}${active.def_stage}`);
+  const shields = "●".repeat(state_.shields) + "○".repeat(Math.max(0, state.options.max_shields - state_.shields));
+  return el("div", {class: `side-panel side-${side}`},
+    el("div", {class: "side-title"},
+      el("span", {class: `name side-${side}`}, `${who}：${state_.name}`),
+      el("span", {class: "muted"}, `盾 ${shields}`),
+      el("span", {class: "muted"}, state_.switch_timer_ms > 0 ? `换人冷却 ${Math.ceil(state_.switch_timer_ms / 1000)} 秒` : "可以换人"),
+    ),
+    el("div", {class: "active-row"},
+      el("div", {
+        class: `token ${active.fainted ? "fainted" : ""}`,
+        id: `token-${side}`,
+        style: `background: ${typeColor(active.types, 0)}; border-color: ${typeColor(active.types, 1)}`,
+        title: active.types.join(" / "),
+      }, active.name.slice(0, 2)),
+      el("div", {class: "active-info"},
+        el("div", {class: "active-name"}, active.name, stages.length ? el("span", {class: "muted"}, `（${stages.join("，")}）`) : null),
+        el("div", {}, hpBar(active.hp, active.max_hp)),
+        el("div", {class: "energy-line-row"}, energyBar(active), ` 能量 ${active.energy}`),
+        el("div", {class: "muted"}, `快招 ${active.fast.name}（${active.fast.turns} 回合，+${active.fast.energy} 能量）`),
+        el("div", {class: "moves-status"}, chargedStatus(active)),
+      ),
+    ),
+    el("div", {class: "bench"}, "后备：", bench.map((m) => el("span", {class: `bench-member ${m.fainted ? "fainted-text" : ""}`},
+      `${m.name} ${m.hp}/${m.max_hp} · 能量 ${m.energy}`))),
+  );
+}
+
+function renderQuestion(data) {
+  const question = data.question;
+  const options = question.options;
+  const manual = state.manual;
+  const button = (option, attrs = {}) => el("button", {
+    ...attrs,
+    onclick: () => stepManual(decisionFrom(option)),
+  }, option.label);
+  const parts = [];
+  if (question.kind === "action") {
+    const fast = options.find((o) => o.action === "fast");
+    const wait = options.find((o) => o.action === "wait");
+    parts.push(
+      el("div", {class: "question-title"}, "该你出招了"),
+      el("div", {class: "button-row"},
+        button(fast, {class: "primary", title: "回车 / 空格"}),
+        button(wait, {title: "W"}),
+        options.filter((o) => o.action === "switch").map((o) => button(o, {class: "switch-button"})),
+      ),
+      renderChargedControls(data),
+      renderDamageHints(data),
+    );
+  } else if (question.kind === "shield") {
+    parts.push(
+      el("div", {class: "question-title alert"}, "对方放大招了！开盾吗？"),
+      el("div", {class: "muted"}, `你还有 ${data.sides[manual.side].shields} 个盾。看对方的能量判断它放的是哪一招。`),
+      el("div", {class: "button-row"},
+        options.map((o) => button(o, {class: o.shield ? "primary" : "", title: o.shield ? "Y" : "N"}))),
+    );
+  } else if (question.kind === "zero_turn_switch") {
+    parts.push(
+      el("div", {class: "question-title"}, "可以不花回合换人（大招后的空回合，或者对手正在选人）"),
+      el("div", {class: "button-row"}, options.map((o) => button(o, {class: o.to === null ? "primary" : "switch-button"}))),
+    );
+  } else {
+    const fainted = data.sides[manual.side].members[data.sides[manual.side].active];
+    parts.push(
+      el("div", {class: "question-title"}, `你的 ${fainted.name} 倒下了，换谁上？`),
+      el("div", {class: "button-row"}, options.map((o) => button(o, {class: "switch-button"}))),
+    );
+  }
+  parts.push(el("div", {class: "muted keys"}, "快捷键：回车或空格 = 快招 / 不换，W = 什么都不做，Y / N = 开盾 / 不开盾，Backspace = 撤销上一步"));
+  return el("div", {class: "question card"}, parts);
+}
+
+/** 每个大招一行：能量够的有威力拖动条（默认 100%），旁边实时显示伤害；不够的写还差几次快招。 */
+function renderChargedControls(data) {
+  const manual = state.manual;
+  const me = data.sides[manual.side];
+  const active = me.members[me.active];
+  const them = data.sides[1 - manual.side];
+  const target = them.members[them.active];
+  const damage = data.damage;
+  const rows = active.charged.map((move) => {
+    const option = data.question.options.find((o) => o.action === "charged" && o.move_id === move.id);
+    if (!option) {
+      return el("div", {class: "charged-row disabled"}, el("span", {class: "charged-name"}, `${move.name}（${move.energy} 能量）`),
+        el("span", {class: "muted"}, move.fast_needed === null ? "能量不够" : `能量不够，还差 ${move.fast_needed} 次快招`));
+    }
+    const table = damage.my_charged[move.id];
+    const minPercent = damage.percents[0];
+    const readout = el("span", {class: "readout"});
+    const slider = el("input", {type: "range", min: minPercent, max: 100, step: 1, value: 100, class: "charge-slider"});
+    const update = () => {
+      const percent = Number(slider.value);
+      const dealt = table.damage[percent - minPercent];
+      const left = Math.max(0, damage.target_hp - dealt);
+      readout.textContent = `威力 ${percent}% → 打 ${dealt}，${target.name} HP ${damage.target_hp} → ${left}${left === 0 ? "（打倒）" : ""}`;
+    };
+    slider.addEventListener("input", update);
+    update();
+    const setTo = (percent) => () => { slider.value = percent; update(); };
+    const hints = [];
+    if (table.ko_min !== null && table.survive_max !== null) {
+      hints.push(
+        el("button", {class: "small", onclick: setTo(table.survive_max)}, `不打死最多 ${table.survive_max}%`),
+        el("button", {class: "small", onclick: setTo(table.ko_min)}, `打死至少要 ${table.ko_min}%`),
+      );
+    } else if (table.ko_min !== null) {
+      hints.push(el("span", {class: "muted"}, `最低威力也能打倒`));
+    } else {
+      hints.push(el("span", {class: "muted"}, `满威力也打不倒`));
+    }
+    hints.push(el("button", {class: "small", onclick: setTo(100)}, "100%"));
+    return el("div", {class: "charged-row"},
+      el("button", {class: "charged-go", onclick: () => stepManual(decisionFrom(option, Number(slider.value) / 100))}, `放 ${move.name}`),
+      slider, readout, el("span", {class: "hints"}, hints));
+  });
+  const shieldNote = them.shields > 0
+    ? `对方还有 ${them.shields} 个盾：开盾的话只打 1。对方判断开不开盾时看的是满威力的伤害。`
+    : "对方没有盾了。";
+  return el("div", {class: "charged-controls"}, el("div", {class: "muted"}, `大招（不开盾时的伤害）。${shieldNote}`), rows);
+}
+
+function renderDamageHints(data) {
+  const manual = state.manual;
+  const damage = data.damage;
+  const me = data.sides[manual.side];
+  const them = data.sides[1 - manual.side];
+  const mine = me.members[me.active];
+  const theirs = them.members[them.active];
+  const theirCharged = theirs.charged.map((c) => `${c.name} ${damage.their_charged[c.id]}`).join("、");
+  return el("div", {class: "muted damage-hints"},
+    `你的 ${mine.fast.name} 每次打 ${damage.my_fast}；对方的 ${theirs.fast.name} 每次打你 ${damage.their_fast}，` +
+    `大招满威力打你：${theirCharged}。`);
+}
+
+function renderLog(data, newEvents) {
+  const names = SIDES.map((side) => data.sides[side].members.map((m) => m.name));
+  const recent = data.events.slice(-14);
+  const fresh = new Set(newEvents);
+  return el("div", {class: "log card"},
+    el("div", {class: "question-title"}, "战况（最近的事件；高亮的是刚才发生的）"),
+    recent.length === 0 ? el("div", {class: "muted"}, "还没有事件。") : null,
+    recent.map((event) => el("div", {class: `${eventClass(event)} ${fresh.has(event) ? "fresh" : ""}`},
+      el("span", {class: "muted"}, `T${event.data.turn} `),
+      el("span", {class: `who name side-${event.side}`}, names[event.side][event.slot]), " ", event.text)),
+  );
+}
+
+/** 刚才发生的事件：挨了快招的抖一下并飘出伤害数字，挨了大招的闪一下，换上来的淡入。 */
+function animateEvents(newEvents, data) {
+  const hits = [{damage: 0, big: false}, {damage: 0, big: false}];
+  const entered = new Set();
+  for (const event of newEvents) {
+    if (event.type === "move") {
+      const target = 1 - event.side;
+      hits[target].damage += event.data.damage;
+      hits[target].big ||= event.data.is_charged;
+    } else if (event.type === "switch") {
+      entered.add(event.side);
+    }
+  }
+  for (const side of SIDES) {
+    const token = document.getElementById(`token-${side}`);
+    if (!token) continue;
+    if (entered.has(side)) token.classList.add("enter");
+    if (hits[side].damage > 0) {
+      token.classList.add(hits[side].big ? "hit-big" : "hit");
+      token.parentElement.append(el("span", {class: `float-damage ${hits[side].big ? "big" : ""}`}, `-${hits[side].damage}`));
+    }
+  }
+}
+
+function onManualKey(event) {
+  const data = state.manual?.data;
+  if (!data || state.manual.pending) return;
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName) && document.activeElement.type !== "range") return;
+  const key = event.key.toLowerCase();
+  if (key === "backspace") { // 打完了也可以撤销最后一步
+    event.preventDefault();
+    undoManual();
+    return;
+  }
+  if (data.status !== "decide") return;
+  const options = data.question.options;
+  let option = null;
+  if (key === "enter" || key === " ") {
+    option = options.find((o) => o.action === "fast") ?? options.find((o) => o.kind === "zero_turn_switch" && o.to === null);
+  } else if (key === "w") {
+    option = options.find((o) => o.action === "wait");
+  } else if (key === "y" || key === "n") {
+    option = options.find((o) => o.kind === "shield" && o.shield === (key === "y"));
+  }
+  if (option) {
+    event.preventDefault();
+    stepManual(decisionFrom(option));
+  }
+}
+
 // ---- 启动 ----
 
 /** 按 state.config 画设置和两队，并请服务器建每只的配置。 */
@@ -1001,6 +1381,9 @@ async function start() {
 async function init() {
   document.getElementById("run").addEventListener("click", runBattle);
   document.getElementById("reset").addEventListener("click", resetToExample);
+  document.getElementById("manual-start").addEventListener("click", startManual);
+  document.getElementById("manual-resume").addEventListener("click", resumeManual);
+  document.addEventListener("keydown", onManualKey);
   let resizeTimer;
   window.addEventListener("resize", () => {  // 窗口宽度变了，按新的宽度重画过程图
     clearTimeout(resizeTimer);
@@ -1013,6 +1396,7 @@ async function init() {
     state.options = await api("/api/options");
     state.config = normalizeConfig(loadSaved() ?? state.options.example);
     await start();
+    updateResumeButton();
   } catch (e) {
     showError(`页面加载失败：${e.message}`);
   }

@@ -428,11 +428,15 @@ def test_manual_damage_preview_ko_threshold():
 
 
 def test_manual_events_hide_decisions_and_reasons():
-    decisions = _auto_decisions()[:12]
+    decisions = _auto_decisions()[:20]
     data = _manual(decisions)
-    assert data["question"]["index"] == 12
+    assert data["question"]["index"] == 20
     assert data["events"]
     assert all(e["type"] != "decision" for e in data["events"])
+    # 开盾的原因（对方的打算）也不给：这时已经有过两次开盾
+    shielded = [e for e in data["events"] if e["type"] == "move" and e["data"]["shielded"]]
+    assert shielded
+    assert all(e["data"].get("shield_reason") is None and "[shield:" not in e["text"] for e in data["events"])
 
 
 def test_manual_shield_question_hides_the_move():

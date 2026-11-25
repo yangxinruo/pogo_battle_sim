@@ -172,3 +172,67 @@ svg.chart { display: block; font-size: 11px; }
 .tip-state { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 4px; }
 .segment-row:hover td { background: #fefce8; }
 tr.flash td { background: #fde68a !important; transition: background 0.3s; }
+
+/* ---- 手动对战（4c） ---- */
+
+.manual-start { display: inline-flex; gap: 8px; align-items: center; margin-left: 12px; padding-left: 12px; border-left: 1px solid var(--border); }
+#arena { margin: 12px 0; }
+.arena-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.arena-head h2 { margin: 0; }
+.arena-buttons { display: flex; gap: 8px; }
+.field { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 8px 0; }
+@media (max-width: 900px) { .field { grid-template-columns: 1fr; } }
+.side-panel { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.side-panel.side-0 { border-top: 4px solid var(--side-0); }
+.side-panel.side-1 { border-top: 4px solid var(--side-1); }
+.side-title { display: flex; gap: 12px; align-items: baseline; margin-bottom: 8px; }
+.side-title .name { font-weight: 600; }
+.active-row { display: flex; gap: 14px; align-items: flex-start; position: relative; }
+.token {
+  width: 64px; height: 64px; flex: none;
+  border-radius: 50%; border: 5px solid;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: 18px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+.token.fainted { filter: grayscale(1); opacity: 0.4; }
+.token.hit { animation: shake 0.35s; }
+.token.hit-big { animation: shake 0.5s, flash 0.5s; }
+.token.enter { animation: enter 0.4s; }
+@keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
+@keyframes flash { 0%, 100% { box-shadow: none; } 30% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.45); } }
+@keyframes enter { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.float-damage {
+  position: absolute; left: 18px; top: -6px;
+  color: var(--bad); font-weight: 700; pointer-events: none;
+  animation: float-up 1s forwards;
+}
+.float-damage.big { font-size: 18px; }
+@keyframes float-up { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-24px); opacity: 0; } }
+.active-info { display: flex; flex-direction: column; gap: 3px; }
+.active-name { font-weight: 600; font-size: 15px; }
+.energy-bar { position: relative; display: inline-block; width: 160px; height: 10px; background: #e5e7eb; border-radius: 5px; vertical-align: middle; }
+.energy-fill { display: block; height: 100%; background: #6366f1; border-radius: 5px; }
+.energy-bar .tick { position: absolute; top: -3px; width: 2px; height: 16px; background: #111827; }
+.moves-status { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; }
+.move-status { color: var(--muted); }
+.move-status.ready { color: var(--good); font-weight: 600; }
+.bench { margin-top: 8px; font-size: 13px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
+.fainted-text { text-decoration: line-through; }
+.question .question-title { font-weight: 600; margin-bottom: 8px; }
+.question-title.alert { color: var(--bad); font-size: 16px; animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: 0.55; } }
+.button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.switch-button { border-color: #c4b5fd; }
+.charged-controls { margin: 6px 0; display: flex; flex-direction: column; gap: 6px; }
+.charged-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.charged-row.disabled { color: var(--muted); }
+.charged-name { font-weight: 600; }
+.charged-go { min-width: 10em; background: #fef3c7; border-color: #f59e0b; }
+.charge-slider { width: 220px; }
+.readout { min-width: 22em; font-variant-numeric: tabular-nums; }
+.hints { display: inline-flex; gap: 6px; align-items: center; }
+button.small { padding: 2px 8px; font-size: 12px; }
+.damage-hints { margin-top: 6px; }
+.keys { margin-top: 8px; font-size: 12px; }
+.log .ev { font-size: 12px; }
+.ev.fresh { background: #fef9c3; }
