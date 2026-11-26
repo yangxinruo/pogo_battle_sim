@@ -14,9 +14,13 @@ tools/run_web.py 把这些函数转发成 HTTP 接口。
 - export_team_battle(raw)、import_team_battle(raw)：把页面上的配置导出成 3v3 配置文件（TOML），或者从这样的文件导入（4f）
 - matchup_options()、matchups(raw)、matchup_battle(raw)：1v1 九宫格和环境前 N（同命令行 tools.run_matchups），
   以及其中一场的过程图和时间线；export_matchups(raw)、import_matchups(raw)：导出 / 导入九宫格的配置文件（4g）
+- matrix_options()、team_matrix_stream(raw)、matrix_battle(raw)、matrix_pairing_config(raw)：队伍对队伍（同命令行
+  tools.run_team_matrix），边打边给出进度；其中一场的完整结果；把那一场送到"打一场"页的配置；
+  export_matrix(raw)、import_matrix(raw)：导出 / 导入队伍对队伍的配置文件（4h）
 - stat_table_payload(league, season, custom_files)：能力值排序，每只的 CP、等级、IV、实际能力值、坦度（4d）
 
-网页发来的配置和配置文件（3v3 见 team_battle.py 开头，九宫格见 matchups.py 开头）写法一样、键也一样，只有一处不同：
+网页发来的配置和配置文件（3v3 见 team_battle.py 开头，九宫格见 matchups.py 开头，队伍对队伍见 team_matrix.py 开头）
+写法一样、键也一样，只有一处不同：
 覆盖文件只能从 data/custom/ 里选，写文件名（例如 "mega_froslass.toml"），不能写任意路径。
 写错时抛出 ConfigError，信息和配置文件写错时一样，开头是"网页"。
 """
@@ -28,7 +32,7 @@ import time
 import tomllib
 import unicodedata
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, fields, replace
 from functools import lru_cache
 from math import ceil
@@ -52,6 +56,7 @@ from pogo_sim.config import (
     ConfigError,
     Participant,
     check_unknown_keys,
+    entry_table,
     error_message,
     load_toml,
     marked,
@@ -75,7 +80,6 @@ from pogo_sim.matchups import (
     SHIELD_COUNTS,
     WIN_RATING,
     Matchups,
-    PoolBuilder,
     ShieldGrid,
     battle_names,
     fight,
@@ -96,6 +100,7 @@ from pogo_sim.rankings import (
     POOL_KINDS,
     RANKING_CUPS,
     Pool,
+    PoolBuilder,
     PoolSpec,
     RankedPokemon,
     load_rankings,
@@ -129,7 +134,7 @@ from pogo_sim.team_battle import (
     switch_records,
     timeline_names,
 )
-from pogo_sim import team_library
+from pogo_sim import team_library, team_matrix
 from pogo_sim.team_policy import TeamPolicyConfig
 from pogo_sim.toml_writer import dumps as toml_dumps
 from pogo_sim.timeline import (
@@ -807,7 +812,7 @@ def team_unsupported(team: Any, shared_policy: dict[str, Any]) -> list[str]:
 
 
 def _page_team(team: dict[str, Any], shared_policy: dict[str, Any]) -> dict[str, Any]:
-    """配置里的一队写成网页的样子：策略只留网页能改的（共用的 [policy] 合并进来）。"""
+    """配置里的一队（或者队伍对队伍的 [opponent_sample]）写成网页的样子：策略只留网页能改的（共用的 [policy] 合并进来）。"""
     merged = merge_tables(shared_policy, team.get("policy", {}))
     page = {key: value for key, value in team.items() if key != "policy"}
     policy = {key: merged[key] for key in PAGE_POLICY_KEYS if key in merged}
@@ -846,16 +851,26 @@ def import_team_battle(raw: Any) -> dict[str, Any]:
     if data.get("description"):
         warnings.append("说明文字（description）网页上不显示，没有导入")
     if data.get("rules"):
-        warnings.append(f"机制规则 [rules] 网页上改不了，没有导入：{'、'.join(sorted(data['rules']))}")
+        warnings.append(rules_warning(data["rules"]))
     for team in data["team"]:
         unsupported = team_unsupported(team, shared_policy)
         if unsupported:
-            warnings.append(f"{team['name']} 的策略参数网页上改不了（只能改盾数和主动换不换人），没有导入：{'、'.join(unsupported)}")
+            warnings.append(policy_warning(team["name"], unsupported))
 
     config = {key: value for key, value in data.items() if key not in ("description", "rules", "policy")}
     config["custom_files"] = names
     config["team"] = [_page_team(team, shared_policy) for team in data["team"]]
     return {"config": config, "warnings": warnings}
+
+
+def rules_warning(rules: dict[str, Any]) -> str:
+    """导入时：配置里的 [rules] 网页上改不了。"""
+    return f"机制规则 [rules] 网页上改不了，没有导入：{'、'.join(sorted(rules))}"
+
+
+def policy_warning(owner: str, keys: Sequence[str]) -> str:
+    """导入时：这一队（owner）的策略参数里，网页上改不了的（team_unsupported）。"""
+    return f"{owner} 的策略参数网页上改不了（只能改盾数和主动换不换人），没有导入：{'、'.join(keys)}"
 
 
 def read_imported_file(raw: Any) -> tuple[dict[str, Any], str]:
@@ -1138,7 +1153,7 @@ def matchup_options() -> dict[str, Any]:
     """九宫格页的选项（联盟、赛季规则、覆盖文件用 options() 里的）：
 
     - policy：SimplePolicyConfig 的每个参数：key、name、default，type 是 "choice"（带 choices）/ "bool" / "number"
-    - pool：环境前 N 能选的 rankings、kinds、ivs（取值和说明）；available[联盟] 是这个联盟有排名文件的 rankings
+    - pool：环境前 N 能选什么（pool_choices）
     - shield_counts、win_rating：九宫格的盾数，评分大于 win_rating 算赢
     - example：第一次打开时用的例子配置（experiments/gl_mega_froslass_top.toml，网页的格式）
     """
@@ -1159,18 +1174,27 @@ def matchup_options() -> dict[str, Any]:
         else:
             item["type"] = "number"
         policy.append(item)
-    describe = lambda options: [{"key": key, "name": name} for key, name in options.items()]  # noqa: E731
     return {
         "policy": policy,
-        "pool": {
-            "rankings": describe(RANKING_CUPS),
-            "kinds": describe(POOL_KINDS),
-            "ivs": describe(IV_RULES),
-            "available": {cp: [cup for cup in RANKING_CUPS if rankings_path(cup, cp).exists()] for cp in LEAGUE_NAMES},
-        },
+        "pool": pool_choices(),
         "shield_counts": list(SHIELD_COUNTS),
         "win_rating": WIN_RATING,
         "example": example_matchups(),
+    }
+
+
+def pool_choices() -> dict[str, Any]:
+    """环境前 N 能选的排名、Mega / 非 Mega、IV 规则（取值和说明），以及每个联盟有哪些排名文件（小联盟没有）。
+    九宫格页的环境前 N 和队伍对队伍页的随机抽共用。"""
+
+    def describe(options: dict[str, str]) -> list[dict[str, str]]:
+        return [{"key": key, "name": name} for key, name in options.items()]
+
+    return {
+        "rankings": describe(RANKING_CUPS),
+        "kinds": describe(POOL_KINDS),
+        "ivs": describe(IV_RULES),
+        "available": {cp: [cup for cup in RANKING_CUPS if rankings_path(cup, cp).exists()] for cp in LEAGUE_NAMES},
     }
 
 
@@ -1382,3 +1406,272 @@ def import_matchups(raw: Any) -> dict[str, Any]:
     data, where = read_imported_file(raw)
     parse_matchup_config(data, where)
     return {"config": data | {"custom_files": imported_custom_names(data, where)}}
+
+
+# ---- 队伍对队伍（4h） ----
+#
+# 和命令行 tools.run_team_matrix 是同一套配置（team_matrix.py 开头）和计算：我方每一队对每一队对手（手写的，以及从
+# 环境前 N 随机抽的）各打一场 3v3。场数多时要打十几秒，所以边打边给出进度（team_matrix_stream；服务器把每一项
+# 写成 NDJSON 的一行发出去，网页一边收一边显示）。
+
+MATRIX_EXAMPLE = REPO_ROOT / "experiments" / "gl_team_matrix_example.toml"
+MATRIX_PROGRESS_SECONDS = 0.2  # 边打边发进度：每隔这么久发一批打完的结果
+
+# 网页上打开"随机抽"时先填的值（同例子配置）
+SAMPLE_DEFAULTS = {
+    "rankings": "mega",
+    "top": 30,
+    "mega_top": 10,
+    "count": 50,
+    "seed": 1,
+    "ivs": "rank1",
+    "shields": PVPOKE_COMPAT.max_shields,
+}
+
+
+def matrix_options() -> dict[str, Any]:
+    """队伍对队伍页的选项（联盟、赛季规则、覆盖文件、盾数、主动换人用 options() 里的）：
+
+    - pool：随机抽能选什么（pool_choices）
+    - sample_defaults：打开"随机抽"时先填的值
+    - example：第一次打开时用的例子配置（experiments/gl_team_matrix_example.toml，网页的格式）
+    """
+    return {"pool": pool_choices(), "sample_defaults": dict(SAMPLE_DEFAULTS), "example": example_matrix()}
+
+
+def example_matrix() -> dict[str, Any]:
+    """队伍对队伍的例子配置，写成网页的格式（覆盖文件写文件名）。"""
+    raw = load_toml(MATRIX_EXAMPLE)
+    raw["custom_files"] = [path.rsplit("/", 1)[-1] for path in raw.get("custom_files", [])]
+    return raw
+
+
+@lru_cache(maxsize=4)
+def _matrix_from_key(key: str) -> team_matrix.TeamMatrix:
+    data = json.loads(key)
+    config = team_matrix.parse_team_matrix_config(data["config"], WHERE)
+    custom_key = tuple(zip(data["config"]["custom_files"], data["mtimes"]))
+    return team_matrix.prepare_team_matrix(config, cached_pool_builder(custom_key))
+
+
+def prepared_matrix(raw: Any) -> team_matrix.TeamMatrix:
+    """检查队伍对队伍的配置，建好每一队、抽好样（同命令行）。同一个配置只建一次：点一场看时不用重建。
+
+    抽样的候选（环境前 N）用九宫格同一个缓存（cached_pool_builder）。
+    """
+    return _matrix_from_key(config_key(raw))
+
+
+def _matrix_team_payload(gm: GameMaster, team: team_matrix.MatrixTeam) -> dict[str, Any]:
+    """一队：名字、哪一组（我方 / 手写 / 抽样）、盾数、策略、每只的配置（_member_info），
+    member_names 是报告里的名字（抽样的带排名里的名次，例如 "Altaria #3"）。"""
+    return {
+        "name": team.name,
+        "group": team.group,
+        "shields": team.setup.shields,
+        "policy": policy_text(team.setup.policy),
+        "member_names": team.member_names(),
+        "ranks": list(team.ranks),
+        "members": [_member_info(gm, p) for p in team.members],
+    }
+
+
+def _sample_payload(matrix: team_matrix.TeamMatrix) -> dict[str, Any] | None:
+    """随机抽的说明（同报告）、候选（每组环境前 N 的名次、综合分、名字）、建不了配置不参加抽样的。"""
+    sample = matrix.sample
+    if sample is None:
+        return None
+    spec = sample.spec
+    gm = matrix.gm
+    return {
+        "description": spec.describe(matrix.config.league, matrix.config.rules.max_team_size),
+        "shields": spec.shields,
+        "policy": policy_text(spec.policy),
+        "candidates": [
+            {
+                "name": pool.spec.name,
+                "members": [{"rank": m.ranked.rank, "score": m.ranked.score, "label": m.participant.label} for m in pool.members],
+                "skipped": [
+                    {"rank": s.ranked.rank, "name": gm.get_species(s.ranked.species_id).name, "reason": s.reason}
+                    for s in pool.skipped
+                ],
+            }
+            for pool in sample.pools
+        ],
+    }
+
+
+def matrix_result_payload(result: BattleResult) -> dict[str, Any]:
+    """一场的结果，从我方看：outcome 是"赢" / "平" / "输"（team_matrix.outcome），其余同 result_payload。"""
+    return {"outcome": team_matrix.outcome(result)} | result_payload(result)
+
+
+def matrix_summary(
+    matrix: team_matrix.TeamMatrix, results: Sequence[Sequence[BattleResult]]
+) -> list[dict[str, Any]]:
+    """总表（同报告）：我方每一队对每组对手（手写 / 抽样 / 全部）的场数、赢、平、输、平均评分、平均剩余只数。"""
+    return [
+        {"team": i, "group": group} | asdict(team_matrix.tally([row[j] for j in indices]))
+        for i, row in enumerate(results)
+        for group, indices in team_matrix.opponent_groups(matrix)
+    ]
+
+
+def team_matrix_stream(raw: Any) -> Iterator[dict[str, Any]]:
+    """队伍对队伍，边打边给出进度（服务器把每一项写成 NDJSON 的一行）。raw 和配置文件写法相同（覆盖文件写文件名）。
+
+    先检查、建好每一队、抽好样：写错时这里就抛出 ConfigError（服务器回 400，还没开始发）。然后返回一个迭代器，依次给出：
+    - {"type": "start", "total": 一共几场, "settings", "teams", "opponents"（_matrix_team_payload；手写的在前、抽样的在后）,
+      "sample"（_sample_payload，没有随机抽时为 None）}
+    - {"type": "progress", "done": 打完了几场, "results": [{"team", "opponent", 这一场的结果（matrix_result_payload）}, ...]}：
+      按打的顺序（先按我方，再按对手），每隔 MATRIX_PROGRESS_SECONDS 秒一批
+    - {"type": "done", "seconds", "summary"（matrix_summary）, "report_markdown", "csv"}：和命令行的报告、--csv 完全相同
+    网页点"停止"就断开请求：服务器不再往下取，也就不再打（team_matrix.iter_team_matrix）。
+    """
+    start = time.perf_counter()
+    matrix = prepared_matrix(raw)
+    return _matrix_events(matrix, start)
+
+
+def _matrix_events(matrix: team_matrix.TeamMatrix, start: float) -> Iterator[dict[str, Any]]:
+    gm = matrix.gm
+    config = matrix.config
+    yield {
+        "type": "start",
+        "total": len(matrix.teams) * len(matrix.opponents),
+        "settings": {
+            "league": config.league,
+            "league_name": league_name(config.league),
+            "season": config.season.name,
+            "custom_log": list(gm.custom_log),
+        },
+        "teams": [_matrix_team_payload(gm, team) for team in matrix.teams],
+        "opponents": [_matrix_team_payload(gm, team) for team in matrix.opponents],
+        "sample": _sample_payload(matrix),
+    }
+    results: list[list[BattleResult | None]] = [[None] * len(matrix.opponents) for _ in matrix.teams]
+    batch: list[dict[str, Any]] = []
+    done = 0
+    last = time.perf_counter()
+    for i, j, result in team_matrix.iter_team_matrix(matrix):
+        results[i][j] = result
+        done += 1
+        batch.append({"team": i, "opponent": j} | matrix_result_payload(result))
+        now = time.perf_counter()
+        if now - last >= MATRIX_PROGRESS_SECONDS:
+            yield {"type": "progress", "done": done, "results": batch}
+            batch = []
+            last = now
+    if batch:
+        yield {"type": "progress", "done": done, "results": batch}
+    finished = [[result for result in row if result is not None] for row in results]  # 到这里每一场都打完了
+    yield {
+        "type": "done",
+        "seconds": round(time.perf_counter() - start, 2),
+        "summary": matrix_summary(matrix, finished),
+        "report_markdown": team_matrix.format_report(matrix, finished),
+        "csv": team_matrix.format_csv(matrix, finished),
+    }
+
+
+def _matrix_pair(raw: Any) -> tuple[team_matrix.TeamMatrix, team_matrix.MatrixTeam, team_matrix.MatrixTeam]:
+    """{"config", "team": 我方第几队, "opponent": 对手第几队}（从 0 数起；对手手写的在前、抽样的在后）。"""
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{WHERE}：要写成表（键值对），得到 {type(raw).__name__}")
+    check_unknown_keys(raw, {"config", "team", "opponent"}, WHERE)
+    if "config" not in raw:
+        raise ConfigError(f"{WHERE}：缺少 config")
+    matrix = prepared_matrix(raw["config"])
+    team = matrix.teams[_index(raw, "team", len(matrix.teams), "我方队伍")]
+    opponent = matrix.opponents[_index(raw, "opponent", len(matrix.opponents), "对手队伍")]
+    return matrix, team, opponent
+
+
+def matrix_battle(raw: Any) -> dict[str, Any]:
+    """队伍对队伍里的一场（网页上点一场）：和打一场的结果完全相同的结构（battle_payload），含完整的 Markdown 报告。
+
+    raw 见 _matrix_pair。和命令行 tools.run_team_matrix --battle 打的是同一场。
+    """
+    matrix, team, opponent = _matrix_pair(raw)
+    battle = team_matrix.pairing(matrix, team, opponent)
+    return battle_payload(battle, run_team_battle(battle))
+
+
+def matrix_pairing_config(raw: Any) -> dict[str, Any]:
+    """队伍对队伍里的一场写成"打一场"页的配置（网页的"在打一场页打开"）。raw 见 _matrix_pair。
+
+    返回 {"config": 3v3 配置（同 example_config 的写法）, "warnings": [...]}。每队写成 [[team]] 的样子：
+    队名、盾数、switching、3 只（config.entry_table；随机抽的队伍也一样，打出来和这里同一场）。
+    "打一场"页只能改盾数和 switching，其余和默认不同的策略参数写进 warnings。
+    """
+    matrix, team, opponent = _matrix_pair(raw)
+    settings = raw["config"]
+    default = TeamPolicyConfig()
+    teams = []
+    warnings = []
+    for t in (team, opponent):
+        setup = t.setup
+        if replace(setup.policy, switching=default.switching) != default:
+            warnings.append(f"{setup.name} 的策略参数“打一场”页上改不了（只能改盾数和主动换不换人），没有带过去")
+        teams.append({
+            "name": setup.name,
+            "shields": setup.shields,
+            "policy": {"switching": setup.policy.switching},
+            "member": [entry_table(entry) for entry in setup.members],
+        })
+    config = {
+        "league": matrix.config.league,
+        "season": settings["season"],
+        "custom_files": list(settings.get("custom_files", [])),
+        "team": teams,
+    }
+    return {"config": config, "warnings": warnings}
+
+
+def export_matrix(raw: Any) -> dict[str, Any]:
+    """把页面上的队伍对队伍配置写成配置文件（TOML），命令行 tools.run_team_matrix 能直接跑。
+
+    先和跑的时候一样检查、建一遍（建好的缓存起来），所以导出的文件一定能跑。返回 {"filename", "text"}。
+    """
+    matrix = prepared_matrix(raw)
+    names = [team.name for team in matrix.teams]
+    stem = team_library.file_name(names[0]).removesuffix(".toml")
+    filename = f"matrix_{stem}{f'_and_{len(names) - 1}_more' if len(names) > 1 else ''}.toml"
+    data = ordered_config(raw, ("description", "custom_files", "league", "season"))
+    header = export_header("队伍对队伍", "team_matrix.py", "run_team_matrix", filename)
+    return {"filename": filename, "text": toml_dumps(data, header)}
+
+
+def import_matrix(raw: Any) -> dict[str, Any]:
+    """从队伍对队伍的配置文件（TOML 文本）导入：检查和命令行读配置文件完全相同，覆盖文件只能是 data/custom/ 里的。
+
+    raw：{"text": 文件内容, "name": 文件名（可选）}。网页上每队（包括随机抽的队伍）只能改盾数和 switching：
+    共用的 [policy] 里的 switching 合并到每一队，其余的策略参数和 [rules] 不导入，写在 warnings 里。
+    返回 {"config": 网页的配置（同 example_matrix 的写法）, "warnings": [...]}。
+    """
+    data, where = read_imported_file(raw)
+    team_matrix.parse_team_matrix_config(data, where)
+    names = imported_custom_names(data, where)
+
+    shared_policy = data.get("policy", {})
+    warnings = []
+    if data.get("rules"):
+        warnings.append(rules_warning(data["rules"]))
+    config = {key: value for key, value in data.items() if key not in ("rules", "policy")}
+    config["custom_files"] = names
+    for key in ("team", "opponent_team"):
+        if key not in data:
+            continue
+        for team in data[key]:
+            unsupported = team_unsupported(team, shared_policy)
+            if unsupported:
+                warnings.append(policy_warning(team["name"], unsupported))
+        config[key] = [_page_team(team, shared_policy) for team in data[key]]
+    if "opponent_sample" in data:
+        sample = data["opponent_sample"]
+        unsupported = team_unsupported(sample, shared_policy)
+        if unsupported:
+            warnings.append(policy_warning("随机抽的队伍", unsupported))
+        config["opponent_sample"] = _page_team(sample, shared_policy)
+    return {"config": config, "warnings": warnings}
+

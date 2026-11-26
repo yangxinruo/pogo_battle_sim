@@ -39,7 +39,7 @@
 import csv
 import io
 import random
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -64,6 +64,7 @@ from pogo_sim.rankings import (
     IV_RULES,
     RANKING_CUPS,
     Pool,
+    PoolBuilder,
     PoolMember,
     PoolSpec,
     format_pool_members,
@@ -160,9 +161,16 @@ class TeamMatrixConfig:
 def load_team_matrix_config(path: Path | str) -> TeamMatrixConfig:
     """读取并检查队伍对队伍的配置文件（格式见模块说明）。写错时抛出 ConfigError。"""
     path = Path(path)
-    raw = load_toml(path)
-    where = path.name
+    return parse_team_matrix_config(load_toml(path), path.name)
 
+
+def parse_team_matrix_config(raw: dict[str, Any], where: str) -> TeamMatrixConfig:
+    """检查已经读进来的配置（和配置文件同样的键）。where 是报错信息的开头（文件名，网页是"网页"）。
+
+    网页发来的配置也走这里（web_api.py），所以检查和命令行完全相同。
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}：配置要写成表（键值对），得到 {type(raw).__name__}")
     check_unknown_keys(raw, _TOP_LEVEL_KEYS, where)
     for key in ("league", "season", "team"):
         if key not in raw:
@@ -297,8 +305,11 @@ class TeamMatrix:
     sample: Sample | None
 
 
-def prepare_team_matrix(config: TeamMatrixConfig) -> TeamMatrix:
-    """加载覆盖文件，每队按赛季规则建配置（每队只建一次），抽样。写错时抛出 ConfigError。"""
+def prepare_team_matrix(config: TeamMatrixConfig, build_pool: PoolBuilder = prepare_pool) -> TeamMatrix:
+    """加载覆盖文件，每队按赛季规则建配置（每队只建一次），抽样。写错时抛出 ConfigError。
+
+    build_pool 是建抽样候选（环境前 N）的函数，默认 rankings.prepare_pool；网页换成带缓存的同一个函数。
+    """
     gm = load_gamemaster(custom_files=config.custom_files)
 
     def prepare(setups: Sequence[TeamSetup], group: str) -> tuple[MatrixTeam, ...]:
@@ -310,18 +321,25 @@ def prepare_team_matrix(config: TeamMatrixConfig) -> TeamMatrix:
     handwritten = prepare(config.opponent_teams, GROUP_HANDWRITTEN)
     sample = None
     if config.sample is not None:
-        sample = draw_sample(gm, config.sample, config.league, config.season, config.rules.max_team_size)
+        sample = draw_sample(gm, config.sample, config.league, config.season, config.rules.max_team_size, build_pool)
     opponents = handwritten + (sample.teams if sample else ())
     return TeamMatrix(config, gm, teams, opponents, sample)
 
 
-def draw_sample(gm: GameMaster, spec: SampleSpec, league: int, season: SeasonRules, size: int) -> Sample:
-    """按模块说明里的规则抽 spec.count 队。候选不够时抛出 ConfigError。"""
+def draw_sample(
+    gm: GameMaster,
+    spec: SampleSpec,
+    league: int,
+    season: SeasonRules,
+    size: int,
+    build_pool: PoolBuilder = prepare_pool,
+) -> Sample:
+    """按模块说明里的规则抽 spec.count 队。候选不够时抛出 ConfigError。build_pool 同 prepare_team_matrix。"""
     where = "opponent_sample"
     if spec.mega_top and season.max_megas_per_team is not None and season.max_megas_per_team < 1:
         raise ConfigError(f"{where}：赛季规则 {season.name} 不许带 Mega，mega_top 要写 0")
     try:
-        pools = tuple(prepare_pool(gm, pool_spec, league, season) for pool_spec in spec.pool_specs())
+        pools = tuple(build_pool(gm, pool_spec, league, season) for pool_spec in spec.pool_specs())
     except ValueError as e:
         raise ConfigError(f"{where}：{e}") from e
     non_megas = pools[0].members
@@ -420,12 +438,23 @@ def pairing(matrix: TeamMatrix, team: MatrixTeam, opponent: MatrixTeam) -> TeamB
 
 
 def run_team_matrix(matrix: TeamMatrix) -> tuple[tuple[BattleResult, ...], ...]:
-    """全部对战。results[我方第几队][对手第几队]。对位评估器在全部对战之间共用（结果不变，只是快）。"""
-    evaluators: dict[SimplePolicyConfig, MatchupEvaluator] = {}
+    """全部对战。results[我方第几队][对手第几队]。"""
+    results: dict[tuple[int, int], BattleResult] = {(i, j): result for i, j, result in iter_team_matrix(matrix)}
     return tuple(
-        tuple(run_team_battle(pairing(matrix, team, opponent), evaluators) for opponent in matrix.opponents)
-        for team in matrix.teams
+        tuple(results[(i, j)] for j in range(len(matrix.opponents))) for i in range(len(matrix.teams))
     )
+
+
+def iter_team_matrix(matrix: TeamMatrix) -> Iterator[tuple[int, int, BattleResult]]:
+    """一场一场地打，每打完一场给出 (我方第几队, 对手第几队, 结果)：先按我方，再按对手的顺序。
+
+    网页用它边打边发进度（web_api.team_matrix_events）；不再往下取就不再打。
+    对位评估器在全部对战之间共用（结果不变，只是快）。
+    """
+    evaluators: dict[SimplePolicyConfig, MatchupEvaluator] = {}
+    for i, team in enumerate(matrix.teams):
+        for j, opponent in enumerate(matrix.opponents):
+            yield i, j, run_team_battle(pairing(matrix, team, opponent), evaluators)
 
 
 def find_team(teams: Sequence[MatrixTeam], name: str, what: str) -> MatrixTeam:
@@ -474,7 +503,7 @@ def tally(results: Sequence[BattleResult]) -> Tally:
     )
 
 
-def _groups(matrix: TeamMatrix) -> list[tuple[str, list[int]]]:
+def opponent_groups(matrix: TeamMatrix) -> list[tuple[str, list[int]]]:
     """对手分组：(组名, 对手的下标)。两组都有时再加"全部"。"""
     groups = []
     for group in (GROUP_HANDWRITTEN, GROUP_SAMPLED):
@@ -494,7 +523,7 @@ def format_summary(matrix: TeamMatrix, results: Sequence[Sequence[BattleResult]]
     header = ["我方队伍", "对手", "场数", "赢", "平", "输", "平均评分", "平均剩余只数（我方 / 对方）"]
     rows = []
     for team, row in zip(matrix.teams, results):
-        for group, indices in _groups(matrix):
+        for group, indices in opponent_groups(matrix):
             t = tally([row[j] for j in indices])
             rows.append([
                 team.name,

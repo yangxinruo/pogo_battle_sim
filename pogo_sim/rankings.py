@@ -18,7 +18,7 @@ PvPoke 的排名是 1v1 的综合排名（overall），每只带一套推荐配�
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -214,6 +214,11 @@ def prepare_pool(gm: GameMaster, spec: PoolSpec, league: int, season: SeasonRule
         members.append(PoolMember(ranked, participant))
     return Pool(spec, league, tuple(members), tuple(skipped))
 
+
+
+# 建一组环境前 N 的函数（默认 prepare_pool）。九宫格和队伍对队伍的抽样都可以换成别的，
+# 例如网页换成带缓存的（web_api.cached_pool_builder：建环境前 N 比打对战慢得多）。
+PoolBuilder = Callable[[GameMaster, PoolSpec, int, SeasonRules], Pool]
 
 # ---- 报告 ----
 

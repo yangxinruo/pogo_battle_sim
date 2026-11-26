@@ -1,7 +1,8 @@
 "use strict";
-// 一只宝可梦的编辑器（4g 起"打一场"页和九宫格页共用；在 common.js 之后、各页自己的脚本之前加载）：
+// 一只宝可梦的编辑器（4g 起几页共用；在 common.js 之后、各页自己的脚本之前加载）：
 // 选宝可梦（可以搜的下拉框）、形态、配招、更多设置（名字、IV、等级、挚友、Mega 等级、招式池外的招），
-// 以及服务器按赛季规则建配置的结果（CP、等级、IV、说明）。
+// 以及服务器按赛季规则建配置的结果（CP、等级、IV、说明）。还有一队的编辑器（4h 起"打一场"页和队伍对队伍页共用）：
+// 队名、盾数、主动换不换人，加上每只的编辑器。
 //
 // 和其他脚本一样只负责显示和填表：建配置、检查都在服务器（POST /api/build，web_api.build_member）。
 // 一只宝可梦的写法同配置文件里的一只（[[team.member]]、[[subject]]、[[opponent]]），见 memberRequest。
@@ -50,6 +51,29 @@ function memberRequest(member) {
   if (member.mega_level !== null) out.mega_level = member.mega_level;
   if (member.outside_movepool) out.outside_movepool = true;
   return out;
+}
+
+// ---- 一队的配置 ----
+
+/** 配置里的一队整理成页面用的样子。defaults：{name, size（每队几只）, shields, switching}，缺的字段用它。
+ *  页面上每队只能改盾数和主动换不换人（switching），其余的策略参数用默认值。 */
+function normalizeTeam(team, defaults) {
+  return {
+    name: team.name ?? defaults.name,
+    shields: team.shields ?? defaults.shields,
+    policy: {switching: team.policy?.switching ?? defaults.switching},
+    member: Array.from({length: defaults.size}, (_, slot) => normalizeMember(team.member?.[slot] ?? {})),
+  };
+}
+
+/** 一队发给服务器的写法：同配置文件里的一队（3v3 的 [[team]]，队伍对队伍的 [[team]]、[[opponent_team]]）。 */
+function teamRequest(team) {
+  return {
+    name: team.name,
+    shields: team.shields,
+    policy: {switching: team.policy.switching},
+    member: team.member.map(memberRequest),
+  };
 }
 
 // ---- 宝可梦和招式 ----
@@ -279,6 +303,38 @@ function memberEditor(key, member, opts) {
     moves.length ? el("div", {class: "moves"}, moves) : null,
     memberDetails(key, member, species),
     el("div", {class: "build", id: `build-${key}`}, buildText(key)),
+  );
+}
+
+/** 一队的编辑器：卡片，标题行是队名、盾数、主动换不换人，下面是每只的编辑器（首发、后备 1、后备 2）。
+ *  team 是 normalizeTeam 整理过的对象，编辑器直接改它。opts：
+ *  - prefix：每只的 key 是 `${prefix}-${第几只}`（memberEditor 的 key）
+ *  - class：卡片另加的类名（例如 "side-0"），可以没有
+ *  - maxShields、switching：盾数最多几个、主动换人能选什么（/api/options 的 max_shields、switching）
+ *  - settings()、onChange()：同 memberEditor；onNameChange()：队名改了另外调用，可以没有
+ *  - nameTitle：队名输入框的提示；tools：标题行最后加的元素（队伍库按钮、去掉……）；
+ *    panel：标题行下面的元素（打开的队伍库），都可以没有 */
+function teamEditor(team, opts) {
+  const shields = Array.from({length: opts.maxShields + 1}, (_, n) => [n, `${n} 盾`]);
+  return el("div", {class: `card team ${opts.class ?? ""}`.trim()},
+    el("div", {class: "team-head"},
+      el("input", {
+        class: "team-name",
+        value: team.name,
+        title: opts.nameTitle ?? "队名",
+        oninput: (e) => { team.name = e.target.value; opts.onChange(); opts.onNameChange?.(); },
+      }),
+      select(shields, team.shields, (v) => { team.shields = Number(v); opts.onChange(); }),
+      select(opts.switching.map((s) => [s.key, s.name]), team.policy.switching,
+        (v) => { team.policy.switching = v; opts.onChange(); }),
+      opts.tools ?? null,
+    ),
+    opts.panel ?? null,
+    team.member.map((member, slot) => memberEditor(`${opts.prefix}-${slot}`, member, {
+      role: slot === 0 ? "首发" : `后备 ${slot}`,
+      settings: opts.settings,
+      onChange: opts.onChange,
+    })),
   );
 }
 

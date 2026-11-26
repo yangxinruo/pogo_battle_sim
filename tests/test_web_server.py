@@ -4,14 +4,16 @@
 配置写错回 400 和中文说明、只监听本机。
 """
 
+import http.client
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 
 import pytest
 
-from pogo_sim import team_library, web_api
+from pogo_sim import team_library, team_matrix, web_api
 from tools.run_web import HOST, make_server
 
 
@@ -202,4 +204,73 @@ def test_matchups(base_url):
     assert status == 400 and "league" in data["error"]
     status, data = post_json(f"{base_url}/api/matchup-battle", {**battle, "shields": [3, 1]})
     assert status == 400 and "shields" in data["error"]
+
+
+def test_team_matrix_stream(base_url):
+    """队伍对队伍（4h）：边打边发，NDJSON 一行一项；写错的配置在开始发之前回 400。"""
+    from tests.test_web_api import _small_matrix
+
+    status, content_type, body = request(f"{base_url}/api/team-matrix", json.dumps(_small_matrix()).encode("utf-8"))
+    assert status == 200 and content_type == "application/x-ndjson; charset=utf-8"
+    events = [json.loads(line) for line in body.decode("utf-8").splitlines()]
+    assert events[0]["type"] == "start" and events[0]["total"] == 8
+    assert events[-1]["type"] == "done" and events[-2]["done"] == 8
+    assert events[-1]["report_markdown"] == "".join(
+        e["report_markdown"] for e in web_api.team_matrix_stream(_small_matrix()) if e["type"] == "done"
+    )
+    bad = _small_matrix()
+    del bad["team"]
+    status, data = post_json(f"{base_url}/api/team-matrix", bad)
+    assert status == 400 and data["error"] == "网页：缺少 team"
+
+
+def test_team_matrix_stops_when_the_page_disconnects(base_url, monkeypatch):
+    """网页点"停止"就是断开请求：服务器写不出去，就不再往下打（同一个进程里数打了几场）。"""
+    from tests.test_web_api import _small_matrix
+
+    played = []
+    original = team_matrix.run_team_battle
+
+    def slow(battle, evaluators=None):
+        played.append(1)
+        time.sleep(0.02)
+        return original(battle, evaluators)
+
+    monkeypatch.setattr(team_matrix, "run_team_battle", slow)
+    monkeypatch.setattr(web_api, "MATRIX_PROGRESS_SECONDS", 0)
+    raw = _small_matrix()
+    raw["opponent_sample"]["count"] = 30  # 我方 2 队 × 对手 31 队 = 62 场
+    host, port = base_url.removeprefix("http://").split(":")
+    connection = http.client.HTTPConnection(host, int(port), timeout=30)
+    connection.request("POST", "/api/team-matrix", json.dumps(raw), {"Content-Type": "application/json"})
+    response = connection.getresponse()
+    assert json.loads(response.fp.readline())["type"] == "start"
+    assert json.loads(response.fp.readline())["done"] == 1
+    response.close()  # 浏览器断开请求时 socket 真的关掉（response 自己也拿着 socket）
+    connection.close()
+    time.sleep(0.5)
+    stopped_at = len(played)
+    time.sleep(0.5)
+    assert len(played) == stopped_at < 62
+    # 服务器照常接别的请求
+    status, _, _ = request(f"{base_url}/api/matrix-options")
+    assert status == 200
+
+
+def test_matrix_endpoints(base_url):
+    from tests.test_web_api import _small_matrix
+
+    raw = _small_matrix()
+    status, _, body = request(f"{base_url}/api/matrix-options")
+    assert status == 200 and json.loads(body)["example"] == web_api.example_matrix()
+    status, data = post_json(f"{base_url}/api/matrix-battle", {"config": raw, "team": 1, "opponent": 0})
+    assert status == 200 and data["result"]["ratings"] == [566, 433]
+    status, data = post_json(f"{base_url}/api/matrix-pairing", {"config": raw, "team": 1, "opponent": 2})
+    assert status == 200 and [t["name"] for t in data["config"]["team"]] == ["Team A (Mega Froslass)", "抽样 2"]
+    status, exported = post_json(f"{base_url}/api/export-matrix", raw)
+    assert status == 200 and exported["filename"] == "matrix_Team_A_and_1_more.toml"
+    status, imported = post_json(f"{base_url}/api/import-matrix", {"text": exported["text"]})
+    assert status == 200 and imported == {"config": raw, "warnings": []}
+    status, data = post_json(f"{base_url}/api/matrix-battle", {"config": raw, "team": 5, "opponent": 0})
+    assert status == 400 and "team" in data["error"]
 

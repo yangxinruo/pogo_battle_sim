@@ -211,6 +211,31 @@ def parse_entry(raw: dict[str, Any], where: str, extra_keys: frozenset[str] = fr
     )
 
 
+def entry_table(entry: Entry) -> dict[str, Any]:
+    """parse_entry 反过来：一只写成配置文件里的表，没设的可选项不写。parse_entry(entry_table(e)) == e。
+
+    网页把队伍对队伍里随机抽的队伍送到"打一场"页时用（web_api.matrix_pairing_config）。
+    """
+    table: dict[str, Any] = {
+        "species": entry.species_id,
+        "fast": entry.moveset.fast,
+        "charged": list(entry.moveset.charged),
+    }
+    if entry.label is not None:
+        table["label"] = entry.label
+    if entry.ivs is not None:
+        table["ivs"] = [entry.ivs.atk, entry.ivs.def_, entry.ivs.hp]
+    if entry.level is not None:
+        table["level"] = entry.level
+    if entry.best_buddy:
+        table["best_buddy"] = True
+    if entry.mega_level is not None:
+        table["mega_level"] = entry.mega_level
+    if entry.outside_movepool:
+        table["outside_movepool"] = True
+    return table
+
+
 @dataclass(frozen=True)
 class Participant:
     """按赛季规则建好配置的一只宝可梦。"""

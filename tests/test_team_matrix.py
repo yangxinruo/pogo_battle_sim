@@ -8,12 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from pogo_sim.config import REPO_ROOT, ConfigError
+from pogo_sim.config import REPO_ROOT, ConfigError, Entry, entry_table, load_toml, parse_entry
 from pogo_sim.evaluation import MatchupEvaluator
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
+from pogo_sim.moveset import Moveset
+from pogo_sim.rankings import prepare_pool
 from pogo_sim.rules import PVPOKE_COMPAT
 from pogo_sim.season import PVPOKE_SEASON
 from pogo_sim.simple_policy import SimplePolicyConfig
+from pogo_sim.stats import IVs
 from pogo_sim.team_battle import make_policies, prepare_team, run_team_battle
 from pogo_sim.team_matrix import (
     GROUP_HANDWRITTEN,
@@ -25,9 +28,12 @@ from pogo_sim.team_matrix import (
     format_csv,
     format_report,
     format_summary,
+    iter_team_matrix,
     load_team_matrix_config,
+    opponent_groups,
     outcome,
     pairing,
+    parse_team_matrix_config,
     prepare_team_matrix,
     run_team_matrix,
     tally,
@@ -329,3 +335,47 @@ def test_prepare_errors_name_the_team(tmp_path: Path) -> None:
     config = load_team_matrix_config(_variant(tmp_path, 'species = "trevenant"', 'species = "trevenantt"'))
     with pytest.raises(ConfigError, match=re.escape("Team B 第 3 只（trevenantt）：找不到宝可梦：trevenantt")):
         prepare_team_matrix(config)
+
+
+# ---- 网页用的（4h） ----
+
+
+def test_parse_dict_same_as_file() -> None:
+    """读进来的 dict 和配置文件走同一套检查（网页发来的配置走 parse_team_matrix_config）。"""
+    assert parse_team_matrix_config(load_toml(EXAMPLE), EXAMPLE.name) == load_team_matrix_config(EXAMPLE)
+    with pytest.raises(ConfigError, match="^网页：配置要写成表（键值对），得到 list$"):
+        parse_team_matrix_config([1], "网页")
+
+
+def test_iter_team_matrix(small: TeamMatrix, small_results) -> None:
+    """逐场给出的结果和 run_team_matrix 相同，顺序是先按我方、再按对手。"""
+    items = list(iter_team_matrix(small))
+    assert [(i, j) for i, j, _ in items] == [(i, j) for i in range(2) for j in range(4)]
+    assert all(result == small_results[i][j] for i, j, result in items)
+
+
+def test_prepare_with_another_pool_builder(tmp_path: Path) -> None:
+    """建抽样候选的函数可以换（网页换成带缓存的），抽出来的一样。"""
+    calls = []
+
+    def build(gm, spec, league, season):
+        calls.append(spec.name)
+        return prepare_pool(gm, spec, league, season)
+
+    config = load_team_matrix_config(_write(tmp_path, SMALL_TEXT))
+    assert prepare_team_matrix(config, build) == prepare_team_matrix(config)
+    assert calls == ["非 Mega 前 30", "Mega 前 10"]
+
+
+def test_opponent_groups(small: TeamMatrix) -> None:
+    assert opponent_groups(small) == [(GROUP_HANDWRITTEN, [0]), (GROUP_SAMPLED, [1, 2, 3]), ("全部", [0, 1, 2, 3])]
+
+
+def test_entry_table_roundtrip(small: TeamMatrix) -> None:
+    """entry_table 是 parse_entry 反过来（网页把随机抽的队伍送到"打一场"页时用）。"""
+    entries = [entry for team in (*small.teams, *small.opponents) for entry in team.setup.members]
+    entries.append(Entry("X", "azumarill", Moveset("BUBBLE", ("ICE_BEAM",)), IVs(1, 2, 3), 20.5, True, 2, True))
+    for entry in entries:
+        assert parse_entry(entry_table(entry), "x") == entry
+    assert entry_table(entries[0]) == {"species": "azumarill", "fast": "BUBBLE", "charged": ["ICE_BEAM", "PLAY_ROUGH"]}
+

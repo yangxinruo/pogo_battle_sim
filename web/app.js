@@ -21,18 +21,9 @@ const state = {
 
 // ---- 小工具（其余在 common.js） ----
 
-/** 一只宝可梦在页面上的名字（editor.js 的 key）。 */
-function memberKey(side, slot) {
-  return `${side}-${slot}`;
-}
-
-/** 第 side 方第 slot 只的编辑器（editor.js）。 */
-function teamMemberEditor(side, slot) {
-  return memberEditor(memberKey(side, slot), state.config.team[side].member[slot], {
-    role: slot === 0 ? "首发" : `后备 ${slot}`,
-    settings: () => ({league: state.config.league, season: state.config.season, custom_files: state.config.custom_files}),
-    onChange: configChanged,
-  });
+/** 建配置用的设置（editor.js 的 settings）。 */
+function buildSettings() {
+  return {league: state.config.league, season: state.config.season, custom_files: state.config.custom_files};
 }
 
 // ---- 配置 ----
@@ -44,18 +35,19 @@ function normalizeConfig(raw) {
     league: raw.league ?? 1500,
     season: raw.season ?? options.seasons[0].key,
     custom_files: (raw.custom_files ?? []).filter((name) => options.custom_files.some((f) => f.name === name)),
-    team: SIDES.map((side) => normalizeTeam(raw.team?.[side] ?? {}, side)),
+    team: SIDES.map((side) => normalizeSide(raw.team?.[side] ?? {}, side)),
   };
 }
 
-function normalizeTeam(team, side) {
-  const size = state.options.team_size;
-  return {
-    name: team.name ?? (side === 0 ? "Team A" : "Team B"),
-    shields: team.shields ?? state.options.max_shields,
-    policy: {switching: team.policy?.switching ?? state.options.switching[0].key},
-    member: Array.from({length: size}, (_, slot) => normalizeMember(team.member?.[slot] ?? {})),
-  };
+/** 第 side 方的一队（editor.js 的 normalizeTeam）：没写队名时叫 Team A / Team B。 */
+function normalizeSide(team, side) {
+  const options = state.options;
+  return normalizeTeam(team, {
+    name: side === 0 ? "Team A" : "Team B",
+    size: options.team_size,
+    shields: options.max_shields,
+    switching: options.switching[0].key,
+  });
 }
 
 /** 打一场时发给服务器的配置：同 3v3 配置文件。 */
@@ -65,12 +57,7 @@ function requestConfig() {
     league: config.league,
     season: config.season,
     custom_files: config.custom_files,
-    team: config.team.map((team) => ({
-      name: team.name,
-      shields: team.shields,
-      policy: {switching: team.policy.switching},
-      member: team.member.map(memberRequest),
-    })),
+    team: config.team.map(teamRequest),
   };
 }
 
@@ -152,28 +139,21 @@ function renderTeams() {
 }
 
 function renderTeam(side) {
-  const team = state.config.team[side];
-  const {options} = state;
-  const shields = Array.from({length: options.max_shields + 1}, (_, n) => [n, `${n} 盾`]);
-  return el("div", {class: `card team side-${side}`},
-    el("div", {class: "team-head"},
-      el("input", {
-        class: "team-name",
-        value: team.name,
-        title: "队名（两队不能同名）",
-        oninput: (e) => { team.name = e.target.value; configChanged(); renderSideSelects(); },
-      }),
-      select(shields, team.shields, (v) => { team.shields = Number(v); configChanged(); }),
-      select(options.switching.map((s) => [s.key, s.name]), team.policy.switching,
-        (v) => { team.policy.switching = v; configChanged(); }),
-      el("span", {class: "library-buttons"},
-        el("button", {onclick: () => saveLibraryTeam(side), title: "存进仓库的 teams/（一队一个文件，文件名按队名）"}, "存进队伍库"),
-        el("button", {onclick: () => toggleLibrary(side)}, state.libraryOpen === side ? "收起队伍库" : "从队伍库载入"),
-      ),
+  return teamEditor(state.config.team[side], {
+    prefix: side,
+    class: `side-${side}`,
+    maxShields: state.options.max_shields,
+    switching: state.options.switching,
+    settings: buildSettings,
+    onChange: configChanged,
+    onNameChange: renderSideSelects,
+    nameTitle: "队名（两队不能同名）",
+    tools: el("span", {class: "library-buttons"},
+      el("button", {onclick: () => saveLibraryTeam(side), title: "存进仓库的 teams/（一队一个文件，文件名按队名）"}, "存进队伍库"),
+      el("button", {onclick: () => toggleLibrary(side)}, state.libraryOpen === side ? "收起队伍库" : "从队伍库载入"),
     ),
-    state.libraryOpen === side ? el("div", {class: "library", id: `library-${side}`}, libraryContent(side)) : null,
-    team.member.map((_, slot) => teamMemberEditor(side, slot)),
-  );
+    panel: state.libraryOpen === side ? el("div", {class: "library", id: `library-${side}`}, libraryContent(side)) : null,
+  });
 }
 
 // ---- 打一场 ----
@@ -844,7 +824,7 @@ async function loadLibraryTeam(side, entry) {
   if (entry.unsupported.length) notes.push(`网页上改不了的策略参数没有载入：${entry.unsupported.join("、")}`);
 
   state.config.custom_files = customFiles;
-  state.config.team[side] = normalizeTeam(entry.team, side);
+  state.config.team[side] = normalizeSide(entry.team, side);
   state.libraryOpen = null;
   configChanged();
   showError("");

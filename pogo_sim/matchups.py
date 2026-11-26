@@ -45,7 +45,7 @@
 
 import csv
 import io
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -69,7 +69,15 @@ from pogo_sim.config import (  # 共用部分；REPO_ROOT、Entry、Participant 
     resolve_path,
 )
 from pogo_sim.gamemaster import GameMaster, load_gamemaster
-from pogo_sim.rankings import Pool, PoolSpec, format_pool_members, format_skipped, parse_pool_spec, prepare_pool
+from pogo_sim.rankings import (
+    Pool,
+    PoolBuilder,
+    PoolSpec,
+    format_pool_members,
+    format_skipped,
+    parse_pool_spec,
+    prepare_pool,
+)
 from pogo_sim.season import SEASON_PRESETS, SeasonRules, league_name
 from pogo_sim.simple_policy import SimplePolicy, SimplePolicyConfig
 from pogo_sim.team import Team
@@ -176,9 +184,6 @@ class Matchups:
     subjects: tuple[Participant, ...]
     opponents: tuple[Participant, ...]  # 手写的对手
     pools: tuple[Pool, ...] = ()  # 环境前 N
-
-
-PoolBuilder = Callable[[GameMaster, PoolSpec, int, SeasonRules], Pool]
 
 
 def prepare_matchups(config: MatchupConfig, build_pool: PoolBuilder = prepare_pool) -> Matchups:

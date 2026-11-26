@@ -12,7 +12,7 @@ from dataclasses import asdict, fields
 
 import pytest
 
-from pogo_sim import team_library, web_api
+from pogo_sim import team_library, team_matrix, web_api
 from pogo_sim.battle_summary import lane_items
 from pogo_sim.best_response import format_best_response_report, search_best_response
 from pogo_sim.config import REPO_ROOT, ConfigError, load_toml, parse_entry, prepare_entry
@@ -1081,3 +1081,229 @@ def test_import_matchups_roundtrip():
 def test_import_matchups_errors(text, message):
     with pytest.raises(ConfigError, match=re.escape(message)):
         web_api.import_matchups({"text": text, "name": "x.toml"})
+
+
+# ---- 队伍对队伍（4h） ----
+
+MATRIX_EXAMPLE = REPO_ROOT / "experiments" / "gl_team_matrix_example.toml"
+
+
+def _small_matrix() -> dict:
+    """例子配置（网页的格式），只抽 3 队：我方 2 队 × 对手 4 队（Team B 和抽样 1–3），同 tests/test_team_matrix.py。"""
+    raw = web_api.example_matrix()
+    raw["opponent_sample"]["count"] = 3
+    return raw
+
+
+@pytest.fixture(scope="module")
+def cli_matrix(tmp_path_factory):
+    """同一个配置写成文件、用命令行的读法跑一遍（对照用）。"""
+    path = tmp_path_factory.mktemp("matrix") / "small.toml"
+    path.write_text(MATRIX_EXAMPLE.read_text(encoding="utf-8").replace("count = 50", "count = 3", 1), encoding="utf-8")
+    matrix = team_matrix.prepare_team_matrix(team_matrix.load_team_matrix_config(path))
+    return matrix, team_matrix.run_team_matrix(matrix)
+
+
+@pytest.fixture(scope="module")
+def matrix_events():
+    """网页跑的同一个配置：每一项转成 JSON 再读回来（浏览器收到的就是这样）。"""
+    return [json.loads(json.dumps(event)) for event in web_api.team_matrix_stream(_small_matrix())]
+
+
+def test_matrix_options():
+    options = web_api.matrix_options()
+    assert options["pool"] == web_api.matchup_options()["pool"]
+    example = options["example"]
+    assert example["custom_files"] == ["mega_froslass.toml"]
+    from_page = team_matrix.parse_team_matrix_config(web_api._with_custom_paths(example), "网页")
+    assert from_page == team_matrix.load_team_matrix_config(MATRIX_EXAMPLE)
+    # 打开"随机抽"时先填的值本身就是一个能用的 [opponent_sample]
+    raw = example | {"opponent_sample": options["sample_defaults"]}
+    assert team_matrix.parse_team_matrix_config(web_api._with_custom_paths(raw), "网页").sample == from_page.sample
+
+
+def test_matrix_stream_same_as_command_line(matrix_events, cli_matrix):
+    """边打边发的结果和命令行完全相同：每一场、总表、报告、CSV。"""
+    matrix, results = cli_matrix
+    start, *progress, done = matrix_events
+    assert start["type"] == "start" and done["type"] == "done"
+    assert {e["type"] for e in progress} == {"progress"}
+    assert start["total"] == 8
+    assert [t["name"] for t in start["teams"]] == ["Team A", "Team A (Mega Froslass)"]
+    assert [t["name"] for t in start["opponents"]] == ["Team B", "抽样 1", "抽样 2", "抽样 3"]
+    assert [t["group"] for t in start["opponents"]] == ["手写", "抽样", "抽样", "抽样"]
+    assert start["opponents"][1]["member_names"] == ["Corsola (Galarian) #11", "Rillaboom #26", "Malamar (Mega) #32"]
+    assert start["opponents"][1]["members"][0] == json.loads(json.dumps(
+        web_api._member_info(matrix.gm, matrix.opponents[1].members[0])))
+    assert start["sample"]["description"] == matrix.sample.spec.describe(1500, 3)
+    assert [c["name"] for c in start["sample"]["candidates"]] == ["非 Mega 前 30", "Mega 前 10"]
+
+    sent = [r for e in progress for r in e["results"]]
+    assert [(r["team"], r["opponent"]) for r in sent] == [(i, j) for i in range(2) for j in range(4)]
+    assert progress[-1]["done"] == 8 and all(a["done"] < b["done"] for a, b in zip(progress, progress[1:]))
+    for r in sent:
+        expected = web_api.matrix_result_payload(results[r["team"]][r["opponent"]])
+        assert {k: v for k, v in r.items() if k not in ("team", "opponent")} == json.loads(json.dumps(expected))
+    assert sent[4]["outcome"] == "赢" and sent[4]["ratings"] == [566, 433]
+
+    assert done["report_markdown"] == team_matrix.format_report(matrix, results)
+    assert done["csv"] == team_matrix.format_csv(matrix, results)
+    assert done["summary"][0] == {"team": 0, "group": "手写", "battles": 1, "wins": 0, "draws": 0, "losses": 1,
+                                  "mean_rating": 221.0, "mean_remaining": [0.0, 3.0]}
+    assert [(s["team"], s["group"]) for s in done["summary"]] == [
+        (i, g) for i in range(2) for g in ("手写", "抽样", "全部")
+    ]
+
+
+def test_matrix_stream_batches(monkeypatch):
+    """每隔 MATRIX_PROGRESS_SECONDS 发一批；设成 0 就一场一批。"""
+    monkeypatch.setattr(web_api, "MATRIX_PROGRESS_SECONDS", 0)
+    events = list(web_api.team_matrix_stream(_small_matrix()))
+    assert [len(e["results"]) for e in events if e["type"] == "progress"] == [1] * 8
+
+
+def test_matrix_stream_stops_when_closed(monkeypatch):
+    """不再往下取（网页点"停止"、服务器关掉迭代器）就不再打。"""
+    played = []
+    original = team_matrix.run_team_battle
+
+    def counting(battle, evaluators=None):
+        played.append(battle.teams[1].setup.name)
+        return original(battle, evaluators)
+
+    monkeypatch.setattr(team_matrix, "run_team_battle", counting)
+    monkeypatch.setattr(web_api, "MATRIX_PROGRESS_SECONDS", 0)
+    events = web_api.team_matrix_stream(_small_matrix())
+    assert next(events)["type"] == "start"
+    assert next(events)["done"] == 1
+    events.close()
+    assert played == ["Team B"]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda raw: raw.pop("team"), "^网页：缺少 team$"),
+        (lambda raw: raw["team"][1].update(name="Team B"), "队伍名字不能重复：Team B"),
+        (lambda raw: raw["opponent_sample"].update(count=0), "count 要写正整数"),
+        (lambda raw: raw.update(league=500), "opponent_sample"),
+        (lambda raw: raw["team"][0]["member"][0].update(species="nope"), "Team A 第 1 只（nope）"),
+    ],
+)
+def test_matrix_stream_config_errors(change, message):
+    """写错的配置在开始发之前就报错（服务器回 400）。"""
+    raw = _small_matrix()
+    change(raw)
+    with pytest.raises(ConfigError, match=message):
+        web_api.team_matrix_stream(raw)
+
+
+def test_prepared_matrix_is_cached():
+    a = web_api.prepared_matrix(_small_matrix())
+    assert web_api.prepared_matrix(_small_matrix()) is a
+    other = _small_matrix()
+    other["opponent_sample"]["seed"] = 2
+    assert web_api.prepared_matrix(other) is not a
+
+
+@pytest.mark.parametrize(("team", "opponent"), [(0, 0), (1, 3)])
+def test_matrix_battle(cli_matrix, team, opponent):
+    """点一场看的就是命令行 --battle 打的那一场：结果、完整报告。"""
+    matrix, results = cli_matrix
+    data = json.loads(json.dumps(web_api.matrix_battle({"config": _small_matrix(), "team": team, "opponent": opponent})))
+    battle = team_matrix.pairing(matrix, matrix.teams[team], matrix.opponents[opponent])
+    assert data["result"] == json.loads(json.dumps(web_api.result_payload(results[team][opponent])))
+    assert data["report_markdown"] == format_team_battle_report(battle, results[team][opponent])
+    assert [t["name"] for t in data["teams"]] == [matrix.teams[team].name, matrix.opponents[opponent].name]
+    assert data["chart"]["turns"] == results[team][opponent].turns
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"team": 2}, "team 要写第几个我方队伍（0 到 1），得到 2"),
+        ({"opponent": 4}, "opponent 要写第几个对手队伍（0 到 3），得到 4"),
+        ({"opponent": None}, "opponent 要写第几个对手队伍"),
+        ({"extra": 1}, "不认识的字段 extra"),
+    ],
+)
+def test_matrix_battle_errors(change, message):
+    request = {"config": _small_matrix(), "team": 0, "opponent": 0} | change
+    with pytest.raises(ConfigError, match=re.escape(message)):
+        web_api.matrix_battle(request)
+    with pytest.raises(ConfigError, match="缺少 config"):
+        web_api.matrix_pairing_config({"team": 0, "opponent": 0})
+
+
+@pytest.mark.parametrize("opponent", [0, 1, 2, 3])
+def test_matrix_pairing_config_replays_the_same_battle(cli_matrix, opponent):
+    """送到"打一场"页的配置（随机抽的队伍也写成每只的配置）打出来和队伍对队伍里的那一场完全相同。"""
+    matrix, results = cli_matrix
+    data = web_api.matrix_pairing_config({"config": _small_matrix(), "team": 1, "opponent": opponent})
+    assert data["warnings"] == []
+    config = data["config"]
+    assert (config["league"], config["season"], config["custom_files"]) == (1500, "pvpoke", ["mega_froslass.toml"])
+    assert [t["name"] for t in config["team"]] == ["Team A (Mega Froslass)", matrix.opponents[opponent].name]
+    battle = prepare_team_battle(parse_team_battle_config(web_api._with_custom_paths(config), "网页"))
+    assert run_team_battle(battle).events == results[1][opponent].events
+
+
+def test_matrix_pairing_config_warns_about_policies():
+    raw = _small_matrix()
+    raw["team"][0]["policy"] = {"switching": "never", "stay_hp_fraction": 0.3}
+    data = web_api.matrix_pairing_config({"config": raw, "team": 0, "opponent": 0})
+    assert data["config"]["team"][0]["policy"] == {"switching": "never"}
+    assert data["warnings"] == ["Team A 的策略参数“打一场”页上改不了（只能改盾数和主动换不换人），没有带过去"]
+
+
+def test_export_matrix_runs_on_the_command_line(tmp_path):
+    raw = _small_matrix()
+    raw["team"][0]["policy"] = {"switching": "never"}
+    data = web_api.export_matrix(raw)
+    assert data["filename"] == "matrix_Team_A_and_1_more.toml"
+    assert data["text"].startswith("# 网页导出的队伍对队伍配置（格式见 pogo_sim/team_matrix.py 开头）")
+    assert "  .venv/bin/python -m tools.run_team_matrix matrix_Team_A_and_1_more.toml" in data["text"]
+    path = tmp_path / data["filename"]
+    path.write_text(data["text"], encoding="utf-8")
+    assert team_matrix.load_team_matrix_config(path) == team_matrix.parse_team_matrix_config(
+        web_api._with_custom_paths(raw), "网页")
+
+
+def test_import_matrix_roundtrip():
+    """导入例子配置文件，得到的就是网页的例子配置；导出再导入不变。"""
+    text = MATRIX_EXAMPLE.read_text(encoding="utf-8")
+    assert web_api.import_matrix({"text": text}) == {"config": web_api.example_matrix(), "warnings": []}
+    page = _small_matrix()
+    page["opponent_sample"]["policy"] = {"switching": "never"}
+    page["opponent_team"][0]["shields"] = 1
+    assert web_api.import_matrix({"text": web_api.export_matrix(page)["text"]}) == {"config": page, "warnings": []}
+
+
+def test_import_matrix_warns_about_settings_the_page_cannot_show():
+    text = MATRIX_EXAMPLE.read_text(encoding="utf-8").replace(
+        "seed = 1", 'seed = 1\n[opponent_sample.policy]\nstay_hp_fraction = 0.3', 1
+    ) + '\n[rules]\ntimeout_result = "rating"\n[policy]\nswitching = "never"\n'
+    data = web_api.import_matrix({"text": text, "name": "x.toml"})
+    config = data["config"]
+    assert "rules" not in config and "policy" not in config
+    assert [t["policy"] for t in config["team"]] == [{"switching": "never"}] * 2  # 共用的 switching 合并进来
+    assert config["opponent_sample"]["policy"] == {"switching": "never"}
+    assert data["warnings"] == [
+        "机制规则 [rules] 网页上改不了，没有导入：timeout_result",
+        "随机抽的队伍 的策略参数网页上改不了（只能改盾数和主动换不换人），没有导入：stay_hp_fraction",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("league = [", "导入的文件 x.toml：不是合法的 TOML"),
+        ('league = 1500\nseason = "pvpoke"\n', "导入的文件 x.toml：缺少 team"),
+        (MATRIX_EXAMPLE.read_text(encoding="utf-8").replace("data/custom/mega_froslass.toml", "experiments/x.toml"),
+         "网页只能用 data/custom/ 里的覆盖文件"),
+    ],
+)
+def test_import_matrix_errors(text, message):
+    with pytest.raises(ConfigError, match=re.escape(message)):
+        web_api.import_matrix({"text": text, "name": "x.toml"})
+
