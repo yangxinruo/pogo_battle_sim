@@ -315,9 +315,9 @@ function drawChart(r, holder, opts = {}) {
     const team = opts.sideLabels?.[side] ?? r.teams[side].name;
     parts.push(
       svg("rect", {x: left, y: laneY[side], width: layout.plotWidth, height: laneHeight, class: `lane-bg lane-${side}`}),
-      svg("text", {x: left - 8, y: laneY[side] + laneHeight / 2 + 4, class: `axis-label side-${side}`, "text-anchor": "end"}, `${team} 招式`),
+      axisLabel(team, "招式", side, left - 8, laneY[side] + laneHeight / 2 + 4),
       svg("rect", {x: left, y: hpY[side], width: layout.plotWidth, height: hpHeight, class: "hp-bg"}),
-      svg("text", {x: left - 8, y: hpY[side] + hpHeight / 2 + 4, class: `axis-label side-${side}`, "text-anchor": "end"}, `${team} HP`),
+      axisLabel(team, "HP", side, left - 8, hpY[side] + hpHeight / 2 + 4),
       svg("text", {x: left - 8, y: hpY[side] + 10, class: "axis-small", "text-anchor": "end"}, "100%"),
       svg("text", {x: left - 8, y: hpY[side] + hpHeight, class: "axis-small", "text-anchor": "end"}, "0"),
     );
@@ -379,6 +379,31 @@ function drawChart(r, holder, opts = {}) {
   overlay.addEventListener("click", (event) => jumpToTurn(turnAt(event)));
   node.append(overlay);
   holder.replaceChildren(node, tooltip);
+  fitAxisLabels(node);
+}
+
+/** 图左边的一个标签："队名 招式" / "队名 HP"（右对齐到 x）。队名太长时由 fitAxisLabels 截短。 */
+function axisLabel(team, what, side, x, y) {
+  return svg("text", {x, y, class: `axis-label side-${side}`, "text-anchor": "end", "data-team": team, "data-what": what},
+    `${team} ${what}`);
+}
+
+/** 左边的标签写不下（队名长，例如 "Team A (Mega Froslass)"）时把队名截短、末尾加"…"，鼠标移上去看全名
+ *  （图上面的图例里也有全名）。要量文字的宽度，所以在图放进页面以后调用；量不出来（页面没显示）时不截。 */
+function fitAxisLabels(node) {
+  const room = CHART.left - 12; // 标签右边在 left - 8，左边留 4
+  for (const label of node.querySelectorAll("text.axis-label")) {
+    if (label.getComputedTextLength() <= room) continue;
+    const team = label.getAttribute("data-team");
+    const what = label.getAttribute("data-what");
+    const chars = [...team];
+    while (chars.length > 1) {
+      chars.pop();
+      label.textContent = `${chars.join("").trimEnd()}… ${what}`;
+      if (label.getComputedTextLength() <= room) break;
+    }
+    label.append(svg("title", {}, `${team} ${what}`));
+  }
 }
 
 /** 一方的招式带：快招小块、大招竖条、换人线、倒下标记。 */
