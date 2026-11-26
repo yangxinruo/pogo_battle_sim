@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PvP 对战模拟器 · 队伍对队伍</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 页面只负责填表和显示；建配置、抽样、对战、总表的数字、报告都在 Python 引擎里（pogo_sim/team_matrix.py、web_api.py）。 -->
+  <header>
+    <nav class="pages"><a href="index.html">打一场 3v3</a><a href="matchups.html">1v1 九宫格</a><a class="current" href="matrix.html">队伍对队伍</a><a href="stats.html">能力值排序</a></nav>
+    <h1>PvP 对战模拟器 · 队伍对队伍</h1>
+    <p class="muted">我方每一队对每一队对手（手写的，以及从 PvPoke 排名的环境前 N 随机抽的）各打一场 3v3，所有队伍都用 3v3 策略 TeamPolicy（docs/mechanics.md 13.7）。和命令行 tools.run_team_matrix 同一套配置和计算。不填 IV 和等级时按赛季规则取 IV 排名第 1 和合法的最高等级。</p>
+  </header>
+
+  <main>
+    <section class="card" id="settings">
+      <h2>设置</h2>
+      <div class="row">
+        <label>联盟 <select id="league"></select></label>
+        <label>赛季规则 <select id="season"></select></label>
+      </div>
+      <div id="custom-files"></div>
+      <div class="row">
+        <label class="description">说明（写在报告开头，可以不写） <input id="description"></label>
+      </div>
+      <div class="row config-file">
+        <span class="muted">队伍对队伍配置文件（TOML，和命令行 tools.run_team_matrix 同一格式）：</span>
+        <button id="import-config">导入…</button>
+        <button id="export-config">导出</button>
+        <input type="file" id="import-file" accept=".toml,text/plain" hidden>
+      </div>
+    </section>
+
+    <section class="group">
+      <div class="group-head">
+        <h2>我方队伍</h2>
+        <span class="muted">至少一队；每一队对下面的每一队对手打一场，我方是第 0 方</span>
+        <span class="library-buttons"><button id="add-team">加一队</button></span>
+      </div>
+      <div class="teams" id="team-list"></div>
+    </section>
+
+    <section class="group">
+      <div class="group-head">
+        <h2>对手：手写的</h2>
+        <span class="muted">手写的对手和随机抽的至少要有一种；所有队伍不能同名</span>
+        <span class="library-buttons"><button id="add-opponent_team">加一队</button></span>
+      </div>
+      <div class="teams" id="opponent_team-list"></div>
+    </section>
+
+    <section class="card">
+      <div class="group-head">
+        <h2>对手：随机抽</h2>
+        <label><input type="checkbox" id="sample-on"> 从 PvPoke 排名的环境前 N 随机抽</label>
+      </div>
+      <div id="sample"></div>
+    </section>
+
+    <section class="actions">
+      <button class="primary" id="run">跑队伍对队伍</button>
+      <button id="stop" disabled>停止</button>
+      <button id="reset">恢复例子</button>
+      <span class="muted" id="status"></span>
+    </section>
+
+    <div class="error" id="error" hidden></div>
+
+    <section id="result" hidden></section>
+  </main>
+
+  <script src="common.js"></script>
+  <script src="editor.js"></script>
+  <script src="battle_view.js"></script>
+  <script src="library.js"></script>
+  <script src="matrix.js"></script>
+</body>
+</html>

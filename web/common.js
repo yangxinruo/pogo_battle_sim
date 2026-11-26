@@ -2,6 +2,10 @@
 // 各个页面（index.html 打一场 3v3、stats.html 能力值排序……）共用的小工具，最先加载。
 // 和其他脚本一样只负责显示，不算任何东西。
 
+// 队伍对队伍页点"在打一场页打开"时，把那一场的两队（web_api.matrix_pairing_config）存在这个键里；
+// "打一场"页打开时读到就问要不要载入，读完就删掉。
+const PAIRING_KEY = "pogo_sim.matrix.pairing.v1";
+
 /** 建一个元素。attrs 里 on* 是事件，class 是类名；children 可以是元素、文字或数组。 */
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);

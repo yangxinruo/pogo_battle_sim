@@ -1,7 +1,7 @@
 "use strict";
-// 队伍库的列表（4f；4g 起"打一场"页和九宫格页共用，在 editor.js 之后加载）：
+// 队伍库的列表（4f；4g 起"打一场"页和九宫格页共用，4h 起还有队伍对队伍页；在 editor.js 之后加载）：
 // 筛选（只看现在的联盟、搜队名 / 宝可梦 / 说明）、每队一行（右边的按钮由页面定）、读不了的文件；
-// 以及载入一队时要勾上哪些覆盖文件、状态栏里写什么。
+// 载入一队时要勾上哪些覆盖文件、状态栏里写什么；以及把一队存进队伍库（先问说明，同名的问过再覆盖）。
 //
 // 队伍库在仓库的 teams/，一队一个 TOML 文件（格式见 pogo_sim/team_library.py），读写都在服务器
 // （GET /api/team-library、POST /api/team-library/save）。网页能列出、载入、存进去，不能删除（要删就手动删文件）。
@@ -76,4 +76,25 @@ function libraryLoadPlan(entry, current, available, league, leagueName) {
     notes.push(`这一队记的联盟是${entry.league_name}，现在是${leagueName}（不强制，按现在的联盟建配置）`);
   }
   return {customFiles: available.filter((name) => current.includes(name) || added.includes(name)), added, notes};
+}
+
+/** 把一队存进队伍库（POST /api/team-library/save）：先问说明；同名的文件已经有了，问过再覆盖。
+ *  team：一队发给服务器的写法（editor.js 的 teamRequest）；settings：{league, season, custom_files}；
+ *  leagueName：现在的联盟的名字。返回状态栏里写的话（点了取消时为 null）；服务器出错时抛出 Error。 */
+async function saveTeamToLibrary(team, settings, leagueName) {
+  const note = prompt(`把 ${team.name} 存进队伍库（仓库的 teams/，文件名按队名）。\n说明（可选，可以留空）：`, "");
+  if (note === null) return null;
+  const body = {...settings, team, note};
+  let data = await api("/api/team-library/save", body);
+  if (!data.saved) {
+    const old = data.existing;
+    const desc = old.error ?? `${old.name}，${old.league_name}：${old.team.member.map((m) => speciesName(m.species)).join(" / ")}` +
+      (old.note ? `（${old.note}）` : "");
+    if (!confirm(`队伍库里已经有 teams/${data.file}：\n${desc}\n\n覆盖吗？（teams/ 在 git 里：提交过的旧版本能找回，没提交的找不回）`)) {
+      return "没有存";
+    }
+    data = await api("/api/team-library/save", {...body, overwrite: true});
+  }
+  const used = data.custom_files.length ? `，记下了用到的覆盖文件 ${data.custom_files.join("、")}` : "";
+  return `已存进队伍库：teams/${data.file}（${leagueName}${used}）`;
 }

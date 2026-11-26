@@ -1,11 +1,12 @@
 "use strict";
-// 一场对战的显示（4g 起"打一场"页和九宫格页共用；在 common.js 之后、各页自己的脚本之前加载）：
-// 卡片和表格的小工具、战斗过程图（SVG）、对位分段表、逐回合时间线。
+// 一场对战的显示（4g 起"打一场"页和九宫格页共用，4h 起还有队伍对队伍页；在 common.js 之后、各页自己的脚本之前加载）：
+// 卡片和表格的小工具（包括评分上色、可以点表头排序的表）、一场 3v3 的全部结果、战斗过程图（SVG）、对位分段表、逐回合时间线。
 //
 // 只负责画：图和表的数据（招式带、逐回合的 HP 和能量、对位分段、时间线）都由服务器算好
 // （pogo_sim/battle_summary.py、web_api 的 chart_payload、timeline_payload、segments_payload）。
 // r 是服务器回的一场的结果：3v3 是 web_api.battle_payload，九宫格里的一场是 web_api.matchup_battle（每方一只）。
-// 这里用到的是 r.teams（每方的 name、names、members）、r.chart、r.timeline，分段表另外用 r.segments。
+// 这里用到的是 r.teams（每方的 name、names、members）、r.chart、r.timeline，分段表另外用 r.segments，
+// 3v3 的几张表（battleCards）另外用 r.members、r.opening、r.switches、r.charged。
 
 const SIDES = [0, 1];
 
@@ -29,6 +30,48 @@ function table(header, rows, attrs = {}) {
     el("tbody", {}, rows.map(row))));
 }
 
+/** 评分的底色：0 红 → 500 白 → 1000 绿，连续渐变（1v1 和 3v3 的评分都是 0–1000，500 是平手）。 */
+function ratingColor(rating) {
+  const t = Math.max(-1, Math.min(1, (rating - 500) / 500));
+  return t >= 0 ? `rgba(22, 163, 74, ${(0.55 * t).toFixed(3)})` : `rgba(220, 38, 38, ${(-0.55 * t).toFixed(3)})`;
+}
+
+function compareValues(a, b) {
+  return typeof a === "string" ? a.localeCompare(b) : a - b;
+}
+
+/** 可以点表头排序的表（点表头只重画这一张）。
+ *  - columns：[{key, title, tip, value(row)（排序用；没有就不能排）, asc（第一次点时从小到大）, num（数字列，表头靠右）, cell(row)}]
+ *  - rows：行的数组，或者返回数组的函数（每次画都重新取：边打边显示时行会变）
+ *  - opts.sorts、opts.key：页面记排序的对象和这张表的名字（排序记在 sorts[key]，整页重画也不丢）；
+ *    opts.first：一开始的排序 {key, desc}；opts.afterDraw()：每次画完调用（例如给正在看的格子加框）；opts.attrs：表格的属性；
+ *    opts.rowAttrs(row)：每一行的属性（例如点一行看这一场），可以没有
+ *  返回的元素带 redraw()：行变了时调用。 */
+function sortableTable(columns, rows, opts) {
+  const holder = el("div");
+  const draw = () => {
+    const sort = opts.sorts[opts.key] ?? opts.first;
+    const column = columns.find((c) => c.key === sort.key);
+    const sorted = [...(typeof rows === "function" ? rows() : rows)];
+    if (column?.value) sorted.sort((a, b) => compareValues(column.value(a), column.value(b)) * (sort.desc ? -1 : 1));
+    const header = columns.map((c) => el("th", {
+      class: [c.value ? "sortable" : "", c.num ? "num" : ""].join(" ").trim() || undefined,
+      title: c.tip,
+      onclick: c.value ? () => {
+        opts.sorts[opts.key] = {key: c.key, desc: sort.key === c.key ? !sort.desc : !c.asc};
+        draw();
+      } : undefined,
+    }, c.title, c.key === sort.key ? (sort.desc ? " ↓" : " ↑") : ""));
+    const cells = (row) => columns.map((c) => c.cell(row));
+    const body = sorted.map((row) => (opts.rowAttrs ? {attrs: opts.rowAttrs(row), cells: cells(row)} : cells(row)));
+    holder.replaceChildren(table(header, body, opts.attrs));
+    opts.afterDraw?.();
+  };
+  draw();
+  holder.redraw = draw;
+  return holder;
+}
+
 function hpBar(hp, max) {
   const fraction = max > 0 ? hp / max : 0;
   const level = fraction > 0.5 ? "high" : fraction > 0.25 ? "mid" : "low";
@@ -39,6 +82,90 @@ function hpBar(hp, max) {
 
 function nameOf(result, side, slot) {
   return el("span", {class: `name side-${side}`}, result.teams[side].names[slot]);
+}
+
+// ---- 一场 3v3 的全部结果（"打一场"页和队伍对队伍页共用） ----
+
+/** 一场 3v3 的结果卡片：过程图、对位分段、每只的情况、开局对位评分、换人、大招和开盾、时间线。
+ *  r 是 web_api.battle_payload；opts.chart、opts.timeline 分别传给 chartView、timelineView。 */
+function battleCards(r, opts = {}) {
+  return [
+    card("战斗过程", ...chartView(r, opts.chart)),
+    card("对位分段", ...segmentsView(r)),
+    card("每只的情况",
+      el("p", {class: "muted"}, "挨大招：被大招打中时开盾挡下的次数 / 队伍还有盾但没开的次数。被盾挡下的大招算 1 点伤害。"),
+      membersTable(r)),
+    card("开局对位评分", ...openingTables(r)),
+    card("换人", switchesTable(r)),
+    card("大招和开盾", chargedTable(r)),
+    card("时间线", ...timelineView(r, opts.timeline)),
+  ];
+}
+
+function membersTable(r) {
+  const rows = r.members.map((s) => {
+    const counts = new Map();
+    for (const move of s.charged_moves) counts.set(move, (counts.get(move) ?? 0) + 1);
+    const charged = [...counts].map(([move, n]) => `${move} ×${n}`).join(", ") || "—";
+    return [
+      r.teams[s.side].name,
+      nameOf(r, s.side, s.slot),
+      hpBar(s.hp, s.max_hp),
+      el("td", {class: "num"}, s.energy),
+      el("td", {class: "num"}, s.damage_dealt),
+      el("td", {class: "num"}, s.damage_taken),
+      el("td", {class: "num"}, s.fast_moves),
+      el("td", {class: "text"}, charged),
+      `${s.charged_shielded} / ${s.charged_unshielded}`,
+      s.fainted_turn !== null ? `第 ${s.fainted_turn} 回合` : "—",
+    ];
+  });
+  return table(["队伍", "宝可梦", "剩余 HP", "剩余能量", "造成伤害", "受到伤害", "快招", "大招", "挨大招：开盾 / 没开", "倒下"], rows);
+}
+
+function openingTables(r) {
+  const parts = [el("p", {class: "muted"},
+    "TeamPolicy 选人、换人看的就是这种评分：行上那只对列上那只打 1v1，双方满 HP、0 能量，盾数从 0 到两队开局的盾数，按 [4, 4, 1] 加权平均。500 是平手。")];
+  if (r.opening.length === 1) {
+    parts.push(el("p", {class: "muted"}, `从 ${r.teams[0].name} 一方看；${r.teams[1].name} 一方约等于 1000 减它。`));
+  }
+  for (const opening of r.opening) {
+    const mine = opening.side;
+    const theirs = 1 - mine;
+    const header = [`${r.teams[mine].name} \\ ${r.teams[theirs].name}`,
+      ...r.teams[theirs].names.map((_, slot) => el("th", {}, nameOf(r, theirs, slot)))];
+    const rows = opening.ratings.map((row, slot) => [
+      nameOf(r, mine, slot),
+      ...row.map((rating) => el("td", {class: `num rating ${rating > 500 ? "good" : rating < 500 ? "bad" : ""}`}, rating)),
+    ]);
+    parts.push(table(header, rows));
+  }
+  return parts;
+}
+
+function switchesTable(r) {
+  if (r.switches.length === 0) return el("p", {}, "没有换人。");
+  const rows = r.switches.map((s) => [
+    el("td", {class: "num"}, s.turn),
+    r.teams[s.side].name,
+    el("span", {}, nameOf(r, s.side, s.from_slot), " → ", nameOf(r, s.side, s.to_slot)),
+    s.kind_text,
+    el("td", {class: "text"}, s.reason),
+  ]);
+  return table(["回合", "队伍", "换人", "类型", "原因"], rows);
+}
+
+function chargedTable(r) {
+  if (r.charged.length === 0) return el("p", {}, "没有放大招。");
+  const rows = r.charged.map((c) => [
+    el("td", {class: "num"}, c.turn),
+    nameOf(r, c.side, c.attacker_slot),
+    c.move_id,
+    nameOf(r, 1 - c.side, c.target_slot),
+    c.shielded ? "开盾挡下" : `${c.damage} 伤害，剩 HP ${c.hp_after}`,
+    el("td", {class: "text"}, c.shield_reason ?? "没有盾"),
+  ]);
+  return table(["回合", "出招", "大招", "挨打", "结果", "开不开盾的原因"], rows);
 }
 
 // ---- 时间线 ----

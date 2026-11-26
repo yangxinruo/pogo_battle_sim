@@ -331,3 +331,15 @@ table.matchup-table tbody tr:hover td:not(.rating-cell) { background: var(--side
 .grid-box table { width: auto; }
 details.opponents-details summary { cursor: pointer; margin: 12px 0 6px; color: var(--muted); }
 .battle-view > .card:first-child { border-left: 4px solid #6366f1; }
+
+/* ---- 队伍对队伍（matrix.html，4h） ---- */
+section.group { margin: 12px 0; }
+section.group .teams { margin-top: 4px; }
+.progress-line { display: flex; gap: 10px; align-items: center; margin: 8px 0; }
+.progress-line progress { width: 280px; height: 14px; }
+.member-chip { margin-right: 10px; white-space: nowrap; }
+td.win-text { font-weight: 700; }
+tr.clickable-row { cursor: pointer; }
+table.matchup-table tbody tr.clickable-row:hover td:not(.rating-cell) { background: #eef2ff; }
+tr.selected td { box-shadow: inset 0 2px 0 #111827, inset 0 -2px 0 #111827; }
+tr.flash td { background: #fef3c7 !important; }

@@ -73,6 +73,22 @@ function loadSaved() {
   }
 }
 
+/** 队伍对队伍页点了"在打一场页打开"：那一场的两队存在 PAIRING_KEY（common.js）里。问过再换掉现在填的；
+ *  不论换不换都删掉这个键（只问一次）。返回要载入的配置，不载入时为 null。 */
+function takePairing() {
+  let pairing = null;
+  try {
+    pairing = JSON.parse(localStorage.getItem(PAIRING_KEY));
+  } catch {
+    // 读不了就当没有
+  }
+  localStorage.removeItem(PAIRING_KEY);
+  if (!pairing?.config) return null;
+  const warnings = pairing.warnings?.length ? `\n\n注意：\n- ${pairing.warnings.join("\n- ")}` : "";
+  if (!confirm(`载入队伍对队伍页里的一场（${pairing.title}）？现在填的设置和两队会被换掉。${warnings}`)) return null;
+  return pairing;
+}
+
 /** 配置改了：记住，并标出下面的结果是改之前的。 */
 function configChanged() {
   save();
@@ -206,85 +222,14 @@ function renderResult() {
         team.members.map((m, slot) => `${slot ? "；" : ""}${team.names[slot]} CP ${m.cp} ${m.level} 级 IV ${m.ivs.join("/")}`),
       )),
     ),
-    card("战斗过程", ...chartView(r, {
-      marks: changes(r).map((change, i) => ({turn: change.turn, label: `改${i + 1}`})),
-      note: changes(r).length ? "绿色虚线是搜索应对改了的决定（改1、改2……，同上面的表）。" : "",
-    })),
-    card("对位分段", ...segmentsView(r)),
-    card("每只的情况",
-      el("p", {class: "muted"}, "挨大招：被大招打中时开盾挡下的次数 / 队伍还有盾但没开的次数。被盾挡下的大招算 1 点伤害。"),
-      membersTable(r)),
-    card("开局对位评分", ...openingTables(r)),
-    card("换人", switchesTable(r)),
-    card("大招和开盾", chargedTable(r)),
-    card("时间线", ...timelineView(r, {highlight: changedTurns(r)})),
+    ...battleCards(r, {
+      chart: {
+        marks: changes(r).map((change, i) => ({turn: change.turn, label: `改${i + 1}`})),
+        note: changes(r).length ? "绿色虚线是搜索应对改了的决定（改1、改2……，同上面的表）。" : "",
+      },
+      timeline: {highlight: changedTurns(r)},
+    }),
   );
-}
-
-function membersTable(r) {
-  const rows = r.members.map((s) => {
-    const counts = new Map();
-    for (const move of s.charged_moves) counts.set(move, (counts.get(move) ?? 0) + 1);
-    const charged = [...counts].map(([move, n]) => `${move} ×${n}`).join(", ") || "—";
-    return [
-      r.teams[s.side].name,
-      nameOf(r, s.side, s.slot),
-      hpBar(s.hp, s.max_hp),
-      el("td", {class: "num"}, s.energy),
-      el("td", {class: "num"}, s.damage_dealt),
-      el("td", {class: "num"}, s.damage_taken),
-      el("td", {class: "num"}, s.fast_moves),
-      el("td", {class: "text"}, charged),
-      `${s.charged_shielded} / ${s.charged_unshielded}`,
-      s.fainted_turn !== null ? `第 ${s.fainted_turn} 回合` : "—",
-    ];
-  });
-  return table(["队伍", "宝可梦", "剩余 HP", "剩余能量", "造成伤害", "受到伤害", "快招", "大招", "挨大招：开盾 / 没开", "倒下"], rows);
-}
-
-function openingTables(r) {
-  const parts = [el("p", {class: "muted"},
-    "TeamPolicy 选人、换人看的就是这种评分：行上那只对列上那只打 1v1，双方满 HP、0 能量，盾数从 0 到两队开局的盾数，按 [4, 4, 1] 加权平均。500 是平手。")];
-  if (r.opening.length === 1) {
-    parts.push(el("p", {class: "muted"}, `从 ${r.teams[0].name} 一方看；${r.teams[1].name} 一方约等于 1000 减它。`));
-  }
-  for (const opening of r.opening) {
-    const mine = opening.side;
-    const theirs = 1 - mine;
-    const header = [`${r.teams[mine].name} \\ ${r.teams[theirs].name}`,
-      ...r.teams[theirs].names.map((_, slot) => el("th", {}, nameOf(r, theirs, slot)))];
-    const rows = opening.ratings.map((row, slot) => [
-      nameOf(r, mine, slot),
-      ...row.map((rating) => el("td", {class: `num rating ${rating > 500 ? "good" : rating < 500 ? "bad" : ""}`}, rating)),
-    ]);
-    parts.push(table(header, rows));
-  }
-  return parts;
-}
-
-function switchesTable(r) {
-  if (r.switches.length === 0) return el("p", {}, "没有换人。");
-  const rows = r.switches.map((s) => [
-    el("td", {class: "num"}, s.turn),
-    r.teams[s.side].name,
-    el("span", {}, nameOf(r, s.side, s.from_slot), " → ", nameOf(r, s.side, s.to_slot)),
-    s.kind_text,
-    el("td", {class: "text"}, s.reason),
-  ]);
-  return table(["回合", "队伍", "换人", "类型", "原因"], rows);
-}
-
-function chargedTable(r) {
-  if (r.charged.length === 0) return el("p", {}, "没有放大招。");
-  const rows = r.charged.map((c) => [
-    el("td", {class: "num"}, c.turn),
-    nameOf(r, c.side, c.attacker_slot),
-    c.move_id,
-    nameOf(r, 1 - c.side, c.target_slot),
-    c.shielded ? "开盾挡下" : `${c.damage} 伤害，剩 HP ${c.hp_after}`,
-    el("td", {class: "text"}, c.shield_reason ?? "没有盾"),
-  ]);
-  return table(["回合", "出招", "大招", "挨打", "结果", "开不开盾的原因"], rows);
 }
 
 function downloadReport() {
@@ -837,33 +782,13 @@ async function loadLibraryTeam(side, entry) {
   setStatus(`已载入 ${entry.name}（teams/${entry.file}）${notes.length ? `。${notes.join("；")}` : ""}`);
 }
 
-/** 把第 side 方存进队伍库：先不覆盖；同名的文件已经有了，问过再覆盖。 */
+/** 把第 side 方存进队伍库（library.js）。 */
 async function saveLibraryTeam(side) {
-  const team = requestConfig().team[side];
-  const note = prompt(`把 ${team.name} 存进队伍库（仓库的 teams/，文件名按队名）。\n说明（可选，可以留空）：`, "");
-  if (note === null) return;
-  const body = {
-    league: state.config.league,
-    season: state.config.season,
-    custom_files: state.config.custom_files,
-    team,
-    note,
-  };
   showError("");
   try {
-    let data = await api("/api/team-library/save", body);
-    if (!data.saved) {
-      const old = data.existing;
-      const desc = old.error ?? `${old.name}，${old.league_name}：${old.team.member.map((m) => speciesName(m.species)).join(" / ")}` +
-        (old.note ? `（${old.note}）` : "");
-      if (!confirm(`队伍库里已经有 teams/${data.file}：\n${desc}\n\n覆盖吗？（teams/ 在 git 里：提交过的旧版本能找回，没提交的找不回）`)) {
-        setStatus("没有存");
-        return;
-      }
-      data = await api("/api/team-library/save", {...body, overwrite: true});
-    }
-    const used = data.custom_files.length ? `，记下了用到的覆盖文件 ${data.custom_files.join("、")}` : "";
-    setStatus(`已存进队伍库：teams/${data.file}（${leagueName(state.config.league)}${used}）`);
+    const status = await saveTeamToLibrary(requestConfig().team[side], buildSettings(), leagueName(state.config.league));
+    if (status === null) return;
+    setStatus(status);
     if (state.libraryOpen !== null) {
       state.library = await api("/api/team-library");
       renderLibrary(state.libraryOpen);
@@ -927,9 +852,14 @@ async function init() {
   document.addEventListener("keydown", onManualKey);
   try {
     state.options = await api("/api/options");
-    state.config = normalizeConfig(loadSaved() ?? state.options.example);
+    const pairing = takePairing();
+    state.config = normalizeConfig(pairing?.config ?? loadSaved() ?? state.options.example);
+    if (pairing) save();
     await start();
     updateResumeButton();
+    if (pairing) {
+      setStatus(`已载入队伍对队伍页里的一场：${pairing.title}${pairing.warnings.length ? `（${pairing.warnings.join("；")}）` : ""}`);
+    }
   } catch (e) {
     showError(`页面加载失败：${e.message}`);
   }

@@ -406,13 +406,7 @@ function resetToExample() {
   start().catch((e) => showError(e.message));
 }
 
-// ---- 结果：上色的格子、可以排序的表 ----
-
-/** 评分的底色：0 红 → 500 白 → 1000 绿，连续渐变。 */
-function ratingColor(rating) {
-  const t = Math.max(-1, Math.min(1, (rating - 500) / 500));
-  return t >= 0 ? `rgba(22, 163, 74, ${(0.55 * t).toFixed(3)})` : `rgba(220, 38, 38, ${(-0.55 * t).toFixed(3)})`;
-}
+// ---- 结果：上色的格子（底色 ratingColor 和可以排序的表 sortableTable 在 battle_view.js） ----
 
 /** 一个评分格子：按评分上色，赢的加粗。给了 cell（哪一场）就可以点，点了在下面看这一场。 */
 function ratingCell(rating, cell) {
@@ -434,32 +428,11 @@ function cellId(cell) {
   return `${cell.pool ?? "h"}:${cell.subject}:${cell.opponent}:${cell.shields.join("-")}`;
 }
 
-function compareValues(a, b) {
-  return typeof a === "string" ? a.localeCompare(b) : a - b;
-}
-
-/** 可以点表头排序的表（点表头只重画这一张）。columns：[{key, title, tip, value(row)（排序用；没有就不能排）,
- *  asc（第一次点时从小到大）, num（数字列，表头靠右）, cell(row)}]。排序记在 state.view.sorts[sortKey]，first 是一开始的排序 {key, desc}。 */
-function sortableTable(sortKey, columns, rows, first) {
-  const holder = el("div");
-  const draw = () => {
-    const sort = state.view.sorts[sortKey] ?? first;
-    const column = columns.find((c) => c.key === sort.key);
-    const sorted = [...rows];
-    if (column?.value) sorted.sort((a, b) => compareValues(column.value(a), column.value(b)) * (sort.desc ? -1 : 1));
-    const header = columns.map((c) => el("th", {
-      class: [c.value ? "sortable" : "", c.num ? "num" : ""].join(" ").trim() || undefined,
-      title: c.tip,
-      onclick: c.value ? () => {
-        state.view.sorts[sortKey] = {key: c.key, desc: sort.key === c.key ? !sort.desc : !c.asc};
-        draw();
-      } : undefined,
-    }, c.title, c.key === sort.key ? (sort.desc ? " ↓" : " ↑") : ""));
-    holder.replaceChildren(table(header, sorted.map((row) => columns.map((c) => c.cell(row))), {class: "matchup-table"}));
-    markSelected();
-  };
-  draw();
-  return holder;
+/** 可以点表头排序的表（battle_view.js 的 sortableTable）：排序记在 state.view.sorts[sortKey]，画完给正在看的格子加框。 */
+function matchupTable(sortKey, columns, rows, first) {
+  return sortableTable(columns, rows, {
+    sorts: state.view.sorts, key: sortKey, first, afterDraw: markSelected, attrs: {class: "matchup-table"},
+  });
 }
 
 function pokemonCell(member) {
@@ -624,7 +597,7 @@ function compareView(r, pool, p) {
     holder.replaceChildren(
       el("div", {class: "view-controls"},
         el("label", {}, "比 ", select(metrics, metric, (v) => { state.view.compare[p] = v; draw(); }))),
-      sortableTable(`compare-${p}`, columns, rows, {key: "rank", desc: false}),
+      matchupTable(`compare-${p}`, columns, rows, {key: "rank", desc: false}),
     );
   };
   draw();
@@ -657,7 +630,7 @@ function subjectView(r, pool, p) {
     holder.replaceChildren(
       el("div", {class: "view-controls"}, chooser,
         el("span", {class: "muted"}, "一行是对一个对手的九宫格，列名是“自己的盾数 对 对手的盾数”。")),
-      sortableTable(`subject-${p}`, columns, rows, {key: "rank", desc: false}),
+      matchupTable(`subject-${p}`, columns, rows, {key: "rank", desc: false}),
     );
   };
   draw();

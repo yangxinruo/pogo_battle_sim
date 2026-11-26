@@ -6,6 +6,7 @@
 
 import http.client
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -14,7 +15,7 @@ import urllib.request
 import pytest
 
 from pogo_sim import team_library, team_matrix, web_api
-from tools.run_web import HOST, make_server
+from tools.run_web import HOST, WEB_DIR, make_server
 
 
 @pytest.fixture(scope="module")
@@ -66,9 +67,27 @@ def test_static_files(base_url):
     assert status == 200 and content_type.startswith("text/html")
     for name in ("common.js", "editor.js", "battle_view.js", "library.js", "matchups.js"):
         assert f'<script src="{name}"></script>'.encode() in body
-    for name in ("common.js", "stats.js", "editor.js", "battle_view.js", "library.js", "matchups.js"):
+    status, content_type, body = request(f"{base_url}/matrix.html")
+    assert status == 200 and content_type.startswith("text/html")
+    for name in ("common.js", "editor.js", "battle_view.js", "library.js", "matrix.js"):
+        assert f'<script src="{name}"></script>'.encode() in body
+    for name in ("common.js", "stats.js", "editor.js", "battle_view.js", "library.js", "matchups.js", "matrix.js"):
         status, content_type, _ = request(f"{base_url}/{name}")
         assert status == 200 and content_type.startswith("text/javascript")
+
+
+PAGES = ("index.html", "matchups.html", "matrix.html", "stats.html")
+
+
+@pytest.mark.parametrize("page", PAGES)
+def test_pages_link_each_other_and_load_existing_scripts(page):
+    """每一页的导航都有全部几页（当前页标出来），页面加载的脚本和样式都在 web/ 里。"""
+    html = (WEB_DIR / page).read_text(encoding="utf-8")
+    nav = re.search(r'<nav class="pages">(.*?)</nav>', html).group(1)
+    assert re.findall(r'href="([^"]+)"', nav) == list(PAGES)
+    assert re.findall(r'<a class="current" href="([^"]+)"', nav) == [page]
+    for src in re.findall(r'<script src="([^"]+)"></script>', html) + re.findall(r'<link rel="stylesheet" href="([^"]+)">', html):
+        assert (WEB_DIR / src).is_file(), src
 
 
 @pytest.mark.parametrize("path", [
