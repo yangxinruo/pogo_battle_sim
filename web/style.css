@@ -295,3 +295,14 @@ details.br-all summary { cursor: pointer; margin: 8px 0; }
 .br-mark { stroke: #16a34a; stroke-width: 2; stroke-dasharray: 4 3; }
 .br-mark-label { fill: #16a34a; font-size: 11px; font-weight: 600; }
 .timeline tr.br-changed td { background: #f0fdf4; }
+
+/* ---- 队伍库和导入导出（4f） ---- */
+.config-file { margin-top: 8px; gap: 8px; }
+.library-buttons { display: inline-flex; gap: 6px; margin-left: auto; }
+.library { border: 1px solid var(--border); border-radius: 6px; background: #f9fafb; padding: 8px 10px; margin-bottom: 8px; }
+.library .row { gap: 10px; margin-bottom: 6px; }
+.library input[type="search"] { width: 14em; }
+.library-list { max-height: 22em; overflow-y: auto; }
+.library-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); padding: 6px 0; }
+.library-main { min-width: 0; }
+.library-broken { margin-top: 6px; font-size: 12px; }

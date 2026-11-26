@@ -138,6 +138,21 @@ def apply_custom_file(
     return result
 
 
+def touched_ids(path: Path) -> tuple[set[str], set[str]]:
+    """覆盖文件新加或修改的宝可梦 ID 和招式 ID：(宝可梦, 招式)。只看表名下面的键，不检查内容。
+
+    队伍库用它判断一队用到了哪些覆盖文件（team_library.custom_files_used）。
+    """
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        raise CustomDataError(f"{path.name}：不是合法的 TOML（{e}）") from e
+    species = {key for table in ("new_pokemon", "patch_pokemon") for key in data.get(table, {})}
+    moves = {key for table in ("new_moves", "patch_moves") for key in data.get(table, {})}
+    return species, moves
+
+
 # ---- 招式 ----
 
 

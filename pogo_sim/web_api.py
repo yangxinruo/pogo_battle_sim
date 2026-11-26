@@ -10,6 +10,8 @@ tools/run_web.py 把这些函数转发成 HTTP 接口。
 - team_battle(raw)：打一场 3v3，返回结果、每只的情况、换人和开盾、逐回合时间线、Markdown 报告
 - manual_battle(raw)：手动对战，玩家操作一队；重打到下一个要玩家决定的地方，返回局面和能选什么（4c）
 - best_response(raw)：对另一队的固定策略，搜索一队的打法；改了哪些决定、每个决定点各选项的结果（4e）
+- library_payload()、save_library_team(raw)：队伍库（teams/，一队一个文件）：列出、存进去；不能删除（4f）
+- export_team_battle(raw)、import_team_battle(raw)：把页面上的配置导出成 3v3 配置文件（TOML），或者从这样的文件导入（4f）
 - stat_table_payload(league, season, custom_files)：能力值排序，每只的 CP、等级、IV、实际能力值、坦度（4d）
 
 网页发来的配置和 3v3 配置文件（team_battle.py 开头）写法一样、键也一样，只有一处不同：
@@ -21,6 +23,7 @@ import json
 import re
 import threading
 import time
+import tomllib
 import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, replace
@@ -48,6 +51,7 @@ from pogo_sim.config import (
     check_unknown_keys,
     error_message,
     load_toml,
+    merge_tables,
     parse_entry,
     prepare_entry,
 )
@@ -81,8 +85,10 @@ from pogo_sim.team_battle import (
     member_summaries,
     opening_matchups,
     parse_common_settings,
+    parse_team,
     parse_team_battle_config,
     policy_text,
+    prepare_team,
     prepare_team_battle,
     run_team_battle,
     segment_end_text,
@@ -90,7 +96,9 @@ from pogo_sim.team_battle import (
     switch_records,
     timeline_names,
 )
+from pogo_sim import team_library
 from pogo_sim.team_policy import TeamPolicyConfig
+from pogo_sim.toml_writer import dumps as toml_dumps
 from pogo_sim.timeline import (
     CancelledEvent,
     DecisionEvent,
@@ -676,6 +684,165 @@ def tried_payload(battle: TeamBattle, side: int, tried: Tried) -> dict[str, Any]
             for option, value in tried.option_scores
         ],
     }
+
+
+# ---- 队伍库和导入导出（4f） ----
+
+# 网页上每队只能改盾数和主动换不换人（4a）；配置里别的策略参数、[rules]、说明文字导入时用不上，要告诉用户。
+PAGE_POLICY_KEYS = ("switching",)
+
+
+def library_payload() -> dict[str, Any]:
+    """队伍库（team_library.LIBRARY_DIR，即仓库的 teams/）里的全部队伍。
+
+    - teams：每队的文件名、队名、常用联盟、用到的覆盖文件、说明，team 是 [team] 表的原样内容
+      （和网页上一队的写法、3v3 配置里的一个 [[team]] 相同），unsupported 是网页上用不上的设置（page_unsupported）
+    - broken：读不了的文件和原因
+    """
+    library = team_library.load_library()
+    return {
+        "dir": "teams/",
+        "teams": [
+            {
+                "file": entry.file,
+                "name": entry.name,
+                "league": entry.league,
+                "league_name": league_name(entry.league),
+                "custom_files": list(entry.custom_files),
+                "note": entry.note,
+                "team": entry.team,
+                "unsupported": team_unsupported(entry.team, {}),
+            }
+            for entry in library.teams
+        ],
+        "broken": [{"file": b.file, "error": b.error} for b in library.broken],
+    }
+
+
+def save_library_team(raw: Any) -> dict[str, Any]:
+    """把页面上的一队存进队伍库。
+
+    raw：{"league", "season", "custom_files", "team": 一队（和打一场的配置里的一队相同）, "note"（可选）, "overwrite"（可选）}。
+    先和打一场一样检查、建一遍配置（建不了的不让存）；文件里记下联盟和这一队用到的覆盖文件。
+    文件已经有了、又没让覆盖时不写，返回 saved = False 和已有的那一队（existing），网页问过再带 overwrite = true 重发。
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{WHERE}：要写成表（键值对），得到 {type(raw).__name__}")
+    check_unknown_keys(raw, {"league", "season", "custom_files", "team", "note", "overwrite"}, WHERE)
+    if "team" not in raw:
+        raise ConfigError(f"{WHERE}：缺少 team")
+    note = raw.get("note", "")
+    if not isinstance(note, str):
+        raise ConfigError(f"{WHERE}：note 要写字符串，得到 {note!r}")
+    overwrite = raw.get("overwrite", False)
+    if not isinstance(overwrite, bool):
+        raise ConfigError(f"{WHERE}：overwrite 要写 true / false，得到 {overwrite!r}")
+    settings = parse_common_settings(
+        {key: raw[key] for key in ("league", "season") if key in raw}
+        | {"custom_files": custom_paths(raw.get("custom_files", []))},
+        WHERE,
+    )
+    setup = parse_team(raw["team"], {}, PVPOKE_COMPAT, f"{WHERE}：这一队")
+    gm = load_gamemaster(custom_files=settings.custom_files)
+    prepare_team(gm, setup, settings.league, settings.season)  # 和打一场同一套检查
+
+    entry = team_library.LibraryTeam(
+        file=team_library.file_name(setup.name),
+        league=settings.league,
+        custom_files=team_library.custom_files_used(settings.custom_files, setup.members),
+        note=note,
+        team=raw["team"],
+    )
+    saved = team_library.save_team(entry, overwrite=overwrite)
+    payload: dict[str, Any] = {"saved": saved, "file": entry.file, "custom_files": list(entry.custom_files)}
+    if not saved:
+        existing = next((t for t in library_payload()["teams"] if t["file"] == entry.file), None)
+        payload["existing"] = existing or {"error": f"teams/{entry.file} 已经有了，但读不了"}
+    return payload
+
+
+def team_unsupported(team: Any, shared_policy: dict[str, Any]) -> list[str]:
+    """一队里网页上用不上的策略参数（只认盾数和 switching），例如 ["bait_shields"]。"""
+    policy = team.get("policy", {}) if isinstance(team, dict) else {}
+    merged = merge_tables(shared_policy, policy if isinstance(policy, dict) else {})
+    return sorted(key for key in merged if key not in PAGE_POLICY_KEYS)
+
+
+def _page_team(team: dict[str, Any], shared_policy: dict[str, Any]) -> dict[str, Any]:
+    """配置里的一队写成网页的样子：策略只留网页能改的（共用的 [policy] 合并进来）。"""
+    merged = merge_tables(shared_policy, team.get("policy", {}))
+    page = {key: value for key, value in team.items() if key != "policy"}
+    policy = {key: merged[key] for key in PAGE_POLICY_KEYS if key in merged}
+    if policy:
+        page["policy"] = policy
+    return page
+
+
+def export_team_battle(raw: Any) -> dict[str, Any]:
+    """把页面上的配置写成 3v3 配置文件（TOML），命令行 tools.run_team_battle 能直接跑。
+
+    先和打一场一样检查、建一遍两队，所以导出的文件一定能跑。覆盖文件写成 data/custom/ 下的路径。
+    返回 {"filename": 建议的文件名, "text": 文件内容}。
+    """
+    prepared_battle(raw)  # 检查（同打一场；建好的两队缓存起来，接着打一场时不用再建）
+    data = _with_custom_paths(raw)
+    if not data["custom_files"]:
+        del data["custom_files"]
+    ordered = {key: data[key] for key in ("custom_files", "league", "season") if key in data}
+    ordered |= {key: value for key, value in data.items() if key not in ordered}
+    names = [team["name"] for team in raw["team"]]
+    filename = "3v3_" + "_vs_".join(team_library.file_name(name).removesuffix(".toml") for name in names) + ".toml"
+    header = [
+        "网页导出的 3v3 配置（格式见 pogo_sim/team_battle.py 开头）。运行：",
+        f"  .venv/bin/python -m tools.run_team_battle {filename}",
+        "不写 IV 和等级的，按赛季规则取 IV 排名第 1 和合法的最高等级。",
+    ]
+    return {"filename": filename, "text": toml_dumps(ordered, header)}
+
+
+def import_team_battle(raw: Any) -> dict[str, Any]:
+    """从 3v3 配置文件（TOML 文本）导入：检查和命令行读配置文件完全相同，再写成网页的样子。
+
+    raw：{"text": 文件内容, "name": 文件名（可选，报错信息里用）}。
+    覆盖文件只能是 data/custom/ 里的（网页的限制）。网页上用不上的设置（说明文字、[rules]、
+    盾数和 switching 以外的策略参数）不导入，写在 warnings 里。
+    返回 {"config": 网页的配置（同 example_config 的写法）, "warnings": [...]}。
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{WHERE}：要写成表（键值对），得到 {type(raw).__name__}")
+    check_unknown_keys(raw, {"text", "name"}, WHERE)
+    text, name = raw.get("text"), raw.get("name", "")
+    if not isinstance(text, str) or not isinstance(name, str):
+        raise ConfigError(f"{WHERE}：text 和 name 要写字符串")
+    where = f"导入的文件{name and f' {name}'}"
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{where}：不是合法的 TOML（{e}）") from e
+    parse_team_battle_config(data, where)
+
+    names = []
+    for path in data.get("custom_files", []):
+        file = path.removeprefix("data/custom/")
+        if "/" in file or file not in available_custom_files():
+            raise ConfigError(f"{where}：网页只能用 data/custom/ 里的覆盖文件，{path!r} 不在那里")
+        names.append(file)
+
+    shared_policy = data.get("policy", {})
+    warnings = []
+    if data.get("description"):
+        warnings.append("说明文字（description）网页上不显示，没有导入")
+    if data.get("rules"):
+        warnings.append(f"机制规则 [rules] 网页上改不了，没有导入：{'、'.join(sorted(data['rules']))}")
+    for team in data["team"]:
+        unsupported = team_unsupported(team, shared_policy)
+        if unsupported:
+            warnings.append(f"{team['name']} 的策略参数网页上改不了（只能改盾数和主动换不换人），没有导入：{'、'.join(unsupported)}")
+
+    config = {key: value for key, value in data.items() if key not in ("description", "rules", "policy")}
+    config["custom_files"] = names
+    config["team"] = [_page_team(team, shared_policy) for team in data["team"]]
+    return {"config": config, "warnings": warnings}
 
 
 # ---- 手动对战（4c） ----

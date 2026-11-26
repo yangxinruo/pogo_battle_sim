@@ -11,7 +11,7 @@ import urllib.request
 
 import pytest
 
-from pogo_sim import web_api
+from pogo_sim import team_library, web_api
 from tools.run_web import HOST, make_server
 
 
@@ -150,3 +150,28 @@ def test_best_response(base_url):
     assert status == 200 and data["search"]["changed"] == 5 and data["result"]["result"]["winner"] == 0
     status, data = post_json(f"{base_url}/api/best-response", {"config": web_api.example_config(), "side": 3})
     assert status == 400 and "side" in data["error"]
+
+
+def test_team_library(base_url, tmp_path, monkeypatch):
+    monkeypatch.setattr(team_library, "LIBRARY_DIR", tmp_path)  # 不碰仓库的 teams/
+    status, _, body = request(f"{base_url}/api/team-library")
+    assert status == 200 and json.loads(body)["teams"] == []
+    team = web_api.example_config()["team"][0]
+    save = {"league": 1500, "season": "pvpoke", "team": team}
+    status, data = post_json(f"{base_url}/api/team-library/save", save)
+    assert status == 200 and data["saved"] and (tmp_path / "Team_A.toml").is_file()
+    status, data = post_json(f"{base_url}/api/team-library/save", save)
+    assert status == 200 and not data["saved"] and data["existing"]["name"] == "Team A"
+    status, _, body = request(f"{base_url}/api/team-library")
+    assert [t["file"] for t in json.loads(body)["teams"]] == ["Team_A.toml"]
+    status, data = post_json(f"{base_url}/api/team-library/save", {"league": 1500, "season": "pvpoke"})
+    assert status == 400 and "缺少 team" in data["error"]
+
+
+def test_export_and_import(base_url):
+    status, exported = post_json(f"{base_url}/api/export-config", web_api.example_config())
+    assert status == 200 and exported["filename"] == "3v3_Team_A_vs_Team_B.toml"
+    status, imported = post_json(f"{base_url}/api/import-config", {"text": exported["text"]})
+    assert status == 200 and imported == {"config": web_api.example_config(), "warnings": []}
+    status, data = post_json(f"{base_url}/api/import-config", {"text": "league = ["})
+    assert status == 400 and "不是合法的 TOML" in data["error"]

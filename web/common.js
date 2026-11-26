@@ -40,6 +40,17 @@ async function api(path, body) {
   return data;
 }
 
+/** 让浏览器把一段文字存成文件（下载报告、导出配置）。 */
+function downloadText(filename, text, type = "text/plain") {
+  const blob = new Blob([text], {type: `${type};charset=utf-8`});
+  const url = URL.createObjectURL(blob);
+  const link = el("a", {href: url, download: filename});
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function showError(message) {
   const box = document.getElementById("error");
   box.textContent = message;

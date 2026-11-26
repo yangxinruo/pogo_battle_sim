@@ -11,7 +11,7 @@ from dataclasses import asdict
 
 import pytest
 
-from pogo_sim import web_api
+from pogo_sim import team_library, web_api
 from pogo_sim.battle_summary import lane_items
 from pogo_sim.best_response import format_best_response_report, search_best_response
 from pogo_sim.config import REPO_ROOT, ConfigError, load_toml, parse_entry, prepare_entry
@@ -654,3 +654,157 @@ def test_best_response_errors():
     bad["team"][0]["member"][0]["species"] = "nope"
     with pytest.raises(ConfigError, match="Team A 第 1 只（nope）：找不到宝可梦"):
         web_api.best_response({"config": bad, "side": 0})
+
+
+# ---- 队伍库和导入导出（4f） ----
+
+
+@pytest.fixture
+def library_dir(tmp_path, monkeypatch):
+    """队伍库换成临时目录（不碰仓库的 teams/）。"""
+    monkeypatch.setattr(team_library, "LIBRARY_DIR", tmp_path)
+    return tmp_path
+
+
+def _save_request(team, **extra):
+    return {"league": 1500, "season": "pvpoke", "custom_files": [], "team": team} | extra
+
+
+def test_save_library_team(library_dir):
+    team = _example()["team"][0]
+    data = web_api.save_library_team(_save_request(team, note="例子"))
+    assert data == {"saved": True, "file": "Team_A.toml", "custom_files": []}
+    saved = team_library.load_library().teams[0]
+    assert (saved.league, saved.note, saved.team) == (1500, "例子", team)
+
+    # 同名的已经有了：不写，告诉网页已有的那一队；带 overwrite 才覆盖
+    other = copy.deepcopy(team)
+    other["shields"] = 1
+    data = web_api.save_library_team(_save_request(other))
+    assert (data["saved"], data["existing"]["note"], data["existing"]["league_name"]) == (False, "例子", "超级联盟")
+    assert team_library.load_library().teams[0].team == team
+    assert web_api.save_library_team(_save_request(other, overwrite=True))["saved"]
+    assert team_library.load_library().teams[0].team == other
+
+
+def test_save_library_team_records_used_custom_files(library_dir):
+    """勾着的覆盖文件里，只记这一队用到的。"""
+    team = _example()["team"][0]
+    team["name"] = "Team A (Mega Froslass)"
+    team["member"][2] = {"species": "froslass_mega", "fast": "POWDER_SNOW", "charged": ["AVALANCHE", "SHADOW_BALL", "AVALANCHE_PLUS"]}
+    all_files = [f["name"] for f in web_api.options()["custom_files"]]
+    data = web_api.save_library_team(_save_request(team, custom_files=all_files))
+    assert (data["file"], data["custom_files"]) == ("Team_A_Mega_Froslass.toml", ["mega_froslass.toml"])
+    listed = web_api.library_payload()["teams"][0]
+    assert (listed["name"], listed["custom_files"], listed["unsupported"]) == (
+        "Team A (Mega Froslass)", ["mega_froslass.toml"], [],
+    )
+
+
+def test_save_library_team_checks_like_a_battle(library_dir):
+    """建不了配置的不让存：和打一场同一套检查。"""
+    team = _example()["team"][0]
+    team["member"][1] = copy.deepcopy(team["member"][0])
+    with pytest.raises(ConfigError, match="同一种宝可梦不能带两只"):
+        web_api.save_library_team(_save_request(team))
+    team = _example()["team"][0]
+    team["member"][2] = {"species": "froslass_mega", "fast": "POWDER_SNOW", "charged": ["AVALANCHE"]}
+    with pytest.raises(ConfigError, match="找不到宝可梦：froslass_mega"):  # 没勾覆盖文件
+        web_api.save_library_team(_save_request(team))
+    with pytest.raises(ConfigError, match="网页：缺少 team"):
+        web_api.save_library_team({"league": 1500, "season": "pvpoke"})
+    with pytest.raises(ConfigError, match="overwrite 要写 true / false"):
+        web_api.save_library_team(_save_request(_example()["team"][0], overwrite="yes"))
+    assert list(library_dir.iterdir()) == []
+
+
+def test_library_payload(library_dir):
+    assert web_api.library_payload() == {"dir": "teams/", "teams": [], "broken": []}
+    team = _example()["team"][1] | {"policy": {"switching": "never", "moves": {"bait_shields": False}}}
+    team_library.save_team(team_library.LibraryTeam("B.toml", 2500, (), "", team), library_dir)
+    (library_dir / "bad.toml").write_text("league = 1500\n", encoding="utf-8")
+    data = json.loads(json.dumps(web_api.library_payload()))
+    assert [(t["file"], t["name"], t["league_name"], t["unsupported"]) for t in data["teams"]] == [
+        ("B.toml", "Team B", "高级联盟", ["moves"]),
+    ]
+    assert data["teams"][0]["team"] == team
+    assert data["broken"] == [{"file": "bad.toml", "error": "teams/bad.toml：缺少 team"}]
+
+
+def test_export_runs_on_the_command_line(tmp_path):
+    """导出的文件就是命令行的 3v3 配置：读回来和页面上的配置打出来完全相同。"""
+    raw = _example()
+    raw["custom_files"] = ["mega_froslass.toml"]
+    raw["team"][0]["shields"] = 1
+    raw["team"][0]["policy"] = {"switching": "never"}
+    data = web_api.export_team_battle(raw)
+    assert data["filename"] == "3v3_Team_A_vs_Team_B.toml"
+    assert data["text"].startswith("# 网页导出的 3v3 配置")
+    assert "  .venv/bin/python -m tools.run_team_battle 3v3_Team_A_vs_Team_B.toml" in data["text"]
+    path = tmp_path / data["filename"]
+    path.write_text(data["text"], encoding="utf-8")
+    from_file = prepare_team_battle(load_team_battle_config(path))
+    from_page = prepare_team_battle(parse_team_battle_config(web_api._with_custom_paths(raw), "网页"))
+    assert from_file.config.custom_files == from_page.config.custom_files
+    assert run_team_battle(from_file).events == run_team_battle(from_page).events
+
+
+def test_export_checks_the_config():
+    bad = _example()
+    bad["team"][1]["name"] = "Team A"
+    with pytest.raises(ConfigError, match="两队不能同名"):
+        web_api.export_team_battle(bad)
+
+
+def test_import_roundtrip():
+    """导入例子配置文件，得到的就是网页的例子配置；导出再导入不变。"""
+    text = EXAMPLE.read_text(encoding="utf-8")
+    data = web_api.import_team_battle({"text": text, "name": "gl_3v3_example.toml"})
+    assert data["config"] == web_api.example_config()
+    assert data["warnings"] == ["说明文字（description）网页上不显示，没有导入"]
+    page = _example()
+    page["custom_files"] = ["mega_froslass.toml"]
+    page["team"][1]["policy"] = {"switching": "never"}
+    again = web_api.import_team_battle({"text": web_api.export_team_battle(page)["text"]})
+    assert again == {"config": page, "warnings": []}
+
+
+def test_import_warns_about_settings_the_page_cannot_show():
+    text = (
+        'league = 1500\nseason = "pvpoke"\n[rules]\ntimeout_result = "rating"\n'
+        '[policy]\nswitching = "never"\n[policy.moves]\nbait_shields = false\n'
+        + "".join(
+            f'[[team]]\nname = "{name}"\n[team.policy]\nstay_hp_fraction = 0.3\n'
+            + "".join(f'[[team.member]]\nspecies = "{s}"\nfast = "{f}"\ncharged = ["{c}"]\n' for s, f, c in members)
+            for name, members in (
+                ("A", [("azumarill", "BUBBLE", "ICE_BEAM"), ("medicham", "COUNTER", "PSYCHIC"), ("registeel", "LOCK_ON", "FOCUS_BLAST")]),
+                ("B", [("swampert", "MUD_SHOT", "EARTHQUAKE"), ("altaria", "DRAGON_BREATH", "MOONBLAST"), ("trevenant", "SHADOW_CLAW", "SEED_BOMB")]),
+            )
+        )
+    )
+    data = web_api.import_team_battle({"text": text})
+    assert [team["policy"] for team in data["config"]["team"]] == [{"switching": "never"}] * 2  # 共用的 switching 合并进来
+    assert "rules" not in data["config"] and "policy" not in data["config"]
+    assert data["warnings"] == [
+        "机制规则 [rules] 网页上改不了，没有导入：timeout_result",
+        "A 的策略参数网页上改不了（只能改盾数和主动换不换人），没有导入：moves、stay_hp_fraction",
+        "B 的策略参数网页上改不了（只能改盾数和主动换不换人），没有导入：moves、stay_hp_fraction",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("league = [", "导入的文件 x.toml：不是合法的 TOML"),
+        ('league = 1500\nseason = "pvpoke"\n', "导入的文件 x.toml：缺少 team"),
+        (
+            'custom_files = ["experiments/x.toml"]\n'
+            + EXAMPLE.read_text(encoding="utf-8").split("description")[0]
+            + 'league = 1500\nseason = "pvpoke"\n' + EXAMPLE.read_text(encoding="utf-8").split('season = "pvpoke"', 1)[1],
+            "网页只能用 data/custom/ 里的覆盖文件",
+        ),
+    ],
+)
+def test_import_errors(text, message):
+    with pytest.raises(ConfigError, match=re.escape(message)):
+        web_api.import_team_battle({"text": text, "name": "x.toml"})

@@ -1,4 +1,4 @@
-"""本地网页界面（第 4 步）：启动一个只给本机用的服务器，在浏览器里选队伍、打 3v3、搜索应对、看时间线、排能力值。
+"""本地网页界面（第 4 步）：启动一个只给本机用的服务器，在浏览器里选队伍、打 3v3、搜索应对、存队伍、看时间线、排能力值。
 
 用法（在仓库根目录）：
     .venv/bin/python -m tools.run_web                  # 启动后自动打开 http://127.0.0.1:8000
@@ -19,6 +19,10 @@
     POST /api/team-battle              打一场 3v3
     POST /api/manual-battle            手动对战：按玩家到现在的决定重打到下一个要玩家决定的地方
     POST /api/best-response            对另一队的固定策略，搜索一队的打法（逐步试探，0.5–2 秒）
+    GET  /api/team-library             队伍库（仓库的 teams/）里的全部队伍
+    POST /api/team-library/save        把一队存进队伍库（同名的要带 overwrite 才覆盖；网页不能删除）
+    POST /api/export-config            把页面上的配置写成 3v3 配置文件（TOML）
+    POST /api/import-config            从 3v3 配置文件（TOML 文本）导入
 配置写错时回 400 和 {"error": "中文说明"}；服务器里的意外错误回 500，详细信息打印在终端。
 """
 
@@ -48,6 +52,7 @@ STATIC_TYPES = {
 # 路径 → 处理函数。GET 的参数是查询字符串（每个键一个列表），POST 的参数是请求体里的 JSON。
 GET_API: dict[str, Callable[[dict[str, list[str]]], Any]] = {
     "/api/options": lambda query: web_api.options(),
+    "/api/team-library": lambda query: web_api.library_payload(),
     "/api/species": lambda query: web_api.species_catalog(query.get("custom", []), query.get("league", [None])[0]),
     "/api/stats": lambda query: web_api.stat_table_payload(
         query.get("league", [None])[0], query.get("season", [None])[0], query.get("custom", [])
@@ -58,6 +63,9 @@ POST_API: dict[str, Callable[[Any], Any]] = {
     "/api/team-battle": web_api.team_battle,
     "/api/manual-battle": web_api.manual_battle,
     "/api/best-response": web_api.best_response,
+    "/api/team-library/save": web_api.save_library_team,
+    "/api/export-config": web_api.export_team_battle,
+    "/api/import-config": web_api.import_team_battle,
 }
 
 

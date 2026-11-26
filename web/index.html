@@ -22,6 +22,12 @@
         <label>赛季规则 <select id="season"></select></label>
       </div>
       <div id="custom-files"></div>
+      <div class="row config-file">
+        <span class="muted">3v3 配置文件（TOML，和命令行 tools.run_team_battle 同一格式）：</span>
+        <button id="import-config">导入…</button>
+        <button id="export-config">导出</button>
+        <input type="file" id="import-file" accept=".toml,text/plain" hidden>
+      </div>
     </section>
 
     <section class="teams" id="teams"></section>

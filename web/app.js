@@ -20,6 +20,9 @@ const state = {
   openDetails: new Set(), // 展开了"更多设置"的是哪几只（重新画这一只时保持展开）
   result: null, // POST /api/team-battle 的结果（手动对战打完以后是那一场的结果；搜索应对时是正在看的那一场）
   bestResponse: null, // POST /api/best-response 的结果（4e）；打一场、手动对战打完时清掉
+  library: null, // GET /api/team-library 的结果（4f）；打开队伍库时重新读
+  libraryOpen: null, // 哪一队下面打开了"从队伍库载入"（0 / 1 / null）
+  libraryFilter: {sameLeague: true, query: ""},
   manual: null, // 手动对战：{config, side, decisions, data（服务器最近一次的回答）, seenEvents, pending}
   showDecisions: true, // 时间线里显示决定和原因
 };
@@ -357,7 +360,12 @@ function renderTeam(side) {
       select(shields, team.shields, (v) => { team.shields = Number(v); configChanged(); }),
       select(options.switching.map((s) => [s.key, s.name]), team.policy.switching,
         (v) => { team.policy.switching = v; configChanged(); }),
+      el("span", {class: "library-buttons"},
+        el("button", {onclick: () => saveLibraryTeam(side), title: "存进仓库的 teams/（一队一个文件，文件名按队名）"}, "存进队伍库"),
+        el("button", {onclick: () => toggleLibrary(side)}, state.libraryOpen === side ? "收起队伍库" : "从队伍库载入"),
+      ),
     ),
+    state.libraryOpen === side ? el("div", {class: "library", id: `library-${side}`}, libraryContent(side)) : null,
     team.member.map((_, slot) => renderMember(side, slot)),
   );
 }
@@ -1062,15 +1070,9 @@ function showSegmentBand(r, segment) {
 function downloadReport() {
   const r = state.result;
   const safe = (text) => text.replace(/[^\w一-鿿-]+/g, "_");
-  const blob = new Blob([r.report_markdown], {type: "text/markdown;charset=utf-8"});
-  const url = URL.createObjectURL(blob);
   const searched = state.bestResponse && r === state.bestResponse.result;
   const name = `${searched ? "best_response" : "3v3"}_${safe(r.teams[0].name)}_vs_${safe(r.teams[1].name)}.md`;
-  const link = el("a", {href: url, download: name});
-  document.body.append(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  downloadText(name, r.report_markdown, "text/markdown");
 }
 
 // ---- 手动对战（4c） ----
@@ -1557,6 +1559,182 @@ function bestResponseCard(br) {
   );
 }
 
+// ---- 队伍库和导入导出（4f） ----
+//
+// 队伍库在仓库的 teams/，一队一个 TOML 文件（格式见 pogo_sim/team_library.py）。网页能列出、载入、存进去，
+// 不能删除（要删就手动删文件）；同名的先问再覆盖。导入 / 导出的是 3v3 配置文件，和命令行同一格式。
+// 检查、写文件、读文件都在服务器（web_api 的 library_payload、save_library_team、import_team_battle、export_team_battle）。
+
+function speciesName(id) {
+  return state.speciesById.get(id)?.name ?? id;
+}
+
+function leagueName(cp) {
+  return state.options.leagues.find((l) => l.cp === cp)?.name ?? `CP ${cp}`;
+}
+
+async function toggleLibrary(side) {
+  state.libraryOpen = state.libraryOpen === side ? null : side;
+  renderTeams();
+  if (state.libraryOpen === null) return;
+  state.library = null;
+  try {
+    state.library = await api("/api/team-library");
+  } catch (e) {
+    showError(e.message);
+  }
+  renderLibrary(side);
+}
+
+function renderLibrary(side) {
+  document.getElementById(`library-${side}`)?.replaceChildren(...libraryContent(side));
+}
+
+/** 打开的队伍库：筛选（只看现在的联盟、搜队名 / 宝可梦 / 说明）、每队一行（载入按钮）、读不了的文件。 */
+function libraryContent(side) {
+  const lib = state.library;
+  if (!lib) return [el("p", {class: "muted"}, "正在读队伍库……")];
+  const filter = state.libraryFilter;
+  const list = el("div", {class: "library-list"});
+  const refresh = () => list.replaceChildren(...libraryRows(side));
+  const controls = el("div", {class: "row"},
+    el("label", {}, el("input", {
+      type: "checkbox",
+      checked: filter.sameLeague,
+      onchange: (e) => { filter.sameLeague = e.target.checked; refresh(); },
+    }), ` 只看${leagueName(state.config.league)}`),
+    el("input", {
+      type: "search",
+      placeholder: "搜队名、宝可梦、说明",
+      value: filter.query,
+      oninput: (e) => { filter.query = e.target.value; refresh(); },
+    }),
+    el("span", {class: "muted"}, `${lib.dir}：一共 ${lib.teams.length} 队。网页不能删除，要删就手动删文件。`),
+  );
+  refresh();
+  const broken = lib.broken.length
+    ? el("div", {class: "library-broken"}, el("div", {}, `读不了的文件（${lib.broken.length} 个）：`),
+      lib.broken.map((b) => el("div", {class: "bad"}, `${b.file}：${b.error}`)))
+    : null;
+  return [controls, list, broken].filter(Boolean);
+}
+
+function libraryRows(side) {
+  const lib = state.library;
+  const filter = state.libraryFilter;
+  const words = normalizeSearch(filter.query).split(" ").filter(Boolean);
+  const rows = lib.teams.filter((entry) => {
+    if (filter.sameLeague && entry.league !== state.config.league) return false;
+    const text = normalizeSearch([entry.name, entry.note, entry.file,
+      ...entry.team.member.flatMap((m) => [m.species, speciesName(m.species)])].join(" "));
+    return words.every((word) => text.includes(word));
+  });
+  if (rows.length === 0) {
+    return [el("p", {class: "muted"}, lib.teams.length ? "没有符合筛选的队伍。" : "队伍库还是空的：在一队上点“存进队伍库”。")];
+  }
+  return rows.map((entry) => el("div", {class: "library-row"},
+    el("div", {class: "library-main"},
+      el("b", {}, entry.name), " ",
+      el("span", {class: "muted"}, `${entry.league_name} · ${entry.file}`),
+      el("div", {}, entry.team.member.map((m) => speciesName(m.species)).join(" / ")),
+      entry.note ? el("div", {class: "muted"}, entry.note) : null,
+      entry.custom_files.length ? el("div", {class: "muted"}, `用到的覆盖文件：${entry.custom_files.join("、")}`) : null,
+    ),
+    el("button", {onclick: () => loadLibraryTeam(side, entry)}, `载入到 ${state.config.team[side].name || `第 ${side} 方`}`),
+  ));
+}
+
+/** 把库里的一队填到第 side 方：用到的覆盖文件自动勾上；联盟不同只提示，不强制。 */
+async function loadLibraryTeam(side, entry) {
+  const notes = [];
+  const available = state.options.custom_files.map((f) => f.name);
+  const missing = entry.custom_files.filter((name) => !state.config.custom_files.includes(name));
+  const added = missing.filter((name) => available.includes(name));
+  const absent = missing.filter((name) => !available.includes(name));
+  if (added.length) notes.push(`自动勾上了覆盖文件 ${added.join("、")}`);
+  if (absent.length) notes.push(`这一队用到的覆盖文件 ${absent.join("、")} 不在 data/custom/ 里`);
+  if (entry.league !== state.config.league) {
+    notes.push(`这一队记的联盟是${entry.league_name}，现在是${leagueName(state.config.league)}（不强制，按现在的联盟建配置）`);
+  }
+  if (entry.unsupported.length) notes.push(`网页上改不了的策略参数没有载入：${entry.unsupported.join("、")}`);
+
+  state.config.custom_files = available.filter((name) => state.config.custom_files.includes(name) || added.includes(name));
+  state.config.team[side] = normalizeTeam(entry.team, side);
+  state.libraryOpen = null;
+  configChanged();
+  showError("");
+  if (added.length) {
+    await start(); // 覆盖文件变了：重新读宝可梦列表
+  } else {
+    renderTeams();
+    rebuildAll();
+  }
+  setStatus(`已载入 ${entry.name}（teams/${entry.file}）${notes.length ? `。${notes.join("；")}` : ""}`);
+}
+
+/** 把第 side 方存进队伍库：先不覆盖；同名的文件已经有了，问过再覆盖。 */
+async function saveLibraryTeam(side) {
+  const team = requestConfig().team[side];
+  const note = prompt(`把 ${team.name} 存进队伍库（仓库的 teams/，文件名按队名）。\n说明（可选，可以留空）：`, "");
+  if (note === null) return;
+  const body = {
+    league: state.config.league,
+    season: state.config.season,
+    custom_files: state.config.custom_files,
+    team,
+    note,
+  };
+  showError("");
+  try {
+    let data = await api("/api/team-library/save", body);
+    if (!data.saved) {
+      const old = data.existing;
+      const desc = old.error ?? `${old.name}，${old.league_name}：${old.team.member.map((m) => speciesName(m.species)).join(" / ")}` +
+        (old.note ? `（${old.note}）` : "");
+      if (!confirm(`队伍库里已经有 teams/${data.file}：\n${desc}\n\n覆盖吗？（teams/ 在 git 里：提交过的旧版本能找回，没提交的找不回）`)) {
+        setStatus("没有存");
+        return;
+      }
+      data = await api("/api/team-library/save", {...body, overwrite: true});
+    }
+    const used = data.custom_files.length ? `，记下了用到的覆盖文件 ${data.custom_files.join("、")}` : "";
+    setStatus(`已存进队伍库：teams/${data.file}（${leagueName(state.config.league)}${used}）`);
+    if (state.libraryOpen !== null) {
+      state.library = await api("/api/team-library");
+      renderLibrary(state.libraryOpen);
+    }
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+async function exportConfig() {
+  showError("");
+  try {
+    const data = await api("/api/export-config", requestConfig());
+    downloadText(data.filename, data.text, "application/toml");
+    setStatus(`已导出 ${data.filename}`);
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+async function importConfig(file) {
+  showError("");
+  try {
+    const data = await api("/api/import-config", {text: await file.text(), name: file.name});
+    const warnings = data.warnings.length ? `\n\n注意：\n- ${data.warnings.join("\n- ")}` : "";
+    if (!confirm(`导入 ${file.name}？现在填的设置和两队会被换掉。${warnings}`)) return;
+    state.config = normalizeConfig(data.config);
+    state.libraryOpen = null;
+    save();
+    await start();
+    setStatus(`已导入 ${file.name}${data.warnings.length ? `（${data.warnings.join("；")}）` : ""}`);
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
 // ---- 启动 ----
 
 /** 按 state.config 画设置和两队，并请服务器建每只的配置。 */
@@ -1574,6 +1752,13 @@ async function init() {
   document.getElementById("manual-start").addEventListener("click", startManual);
   document.getElementById("manual-resume").addEventListener("click", resumeManual);
   document.getElementById("br-start").addEventListener("click", runBestResponse);
+  document.getElementById("export-config").addEventListener("click", exportConfig);
+  document.getElementById("import-config").addEventListener("click", () => document.getElementById("import-file").click());
+  document.getElementById("import-file").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    e.target.value = ""; // 同一个文件再选一次也能触发
+    if (file) importConfig(file);
+  });
   document.addEventListener("keydown", onManualKey);
   let resizeTimer;
   window.addEventListener("resize", () => {  // 窗口宽度变了，按新的宽度重画过程图
