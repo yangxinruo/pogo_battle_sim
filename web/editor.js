@@ -369,10 +369,15 @@ function memberChanged(key) {
 
 /** 页面整个重画、要换掉全部编辑器之前调用：忘掉以前画过的每只和它们建配置的结果。 */
 function forgetMembers() {
-  for (const timer of editor.buildTimers.values()) clearTimeout(timer);
-  editor.members.clear();
-  editor.builds.clear();
-  editor.buildTimers.clear();
+  for (const key of [...editor.members.keys()]) forgetMember(key);
+}
+
+/** 这一只从页面上去掉了：忘掉它（不再建配置）。 */
+function forgetMember(key) {
+  clearTimeout(editor.buildTimers.get(key));
+  editor.members.delete(key);
+  editor.builds.delete(key);
+  editor.buildTimers.delete(key);
 }
 
 // ---- 建配置（服务器算 CP、等级、IV） ----

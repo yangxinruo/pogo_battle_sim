@@ -156,7 +156,8 @@ function chartLayout(turns, width) {
 }
 
 /** 过程图（图例、说明、图）。opts.marks：图上另外标的回合 [{turn, label}]，画成绿色虚线；
- *  opts.note：说明后面加的一句（解释这些标记）。 */
+ *  opts.note：说明后面加的一句（解释这些标记）；opts.sideLabels：图左边每方的名字（默认是队名，
+ *  九宫格里的一场队名是宝可梦的名字，太长，改用"测试对象""对手"）。 */
 function chartView(r, opts = {}) {
   const legend = el("div", {class: "chart-legend"},
     SIDES.map((side) => el("span", {class: "legend-team"},
@@ -184,7 +185,7 @@ function drawChart(r, holder, opts = {}) {
 
   // 背景和左边的标签
   for (const side of SIDES) {
-    const team = r.teams[side].name;
+    const team = opts.sideLabels?.[side] ?? r.teams[side].name;
     parts.push(
       svg("rect", {x: left, y: laneY[side], width: layout.plotWidth, height: laneHeight, class: `lane-bg lane-${side}`}),
       svg("text", {x: left - 8, y: laneY[side] + laneHeight / 2 + 4, class: `axis-label side-${side}`, "text-anchor": "end"}, `${team} 招式`),

@@ -826,75 +826,24 @@ function renderLibrary(side) {
   document.getElementById(`library-${side}`)?.replaceChildren(...libraryContent(side));
 }
 
-/** 打开的队伍库：筛选（只看现在的联盟、搜队名 / 宝可梦 / 说明）、每队一行（载入按钮）、读不了的文件。 */
+/** 打开的队伍库（library.js）：每队一行的按钮是"载入到 这一队"。 */
 function libraryContent(side) {
-  const lib = state.library;
-  if (!lib) return [el("p", {class: "muted"}, "正在读队伍库……")];
-  const filter = state.libraryFilter;
-  const list = el("div", {class: "library-list"});
-  const refresh = () => list.replaceChildren(...libraryRows(side));
-  const controls = el("div", {class: "row"},
-    el("label", {}, el("input", {
-      type: "checkbox",
-      checked: filter.sameLeague,
-      onchange: (e) => { filter.sameLeague = e.target.checked; refresh(); },
-    }), ` 只看${leagueName(state.config.league)}`),
-    el("input", {
-      type: "search",
-      placeholder: "搜队名、宝可梦、说明",
-      value: filter.query,
-      oninput: (e) => { filter.query = e.target.value; refresh(); },
-    }),
-    el("span", {class: "muted"}, `${lib.dir}：一共 ${lib.teams.length} 队。网页不能删除，要删就手动删文件。`),
-  );
-  refresh();
-  const broken = lib.broken.length
-    ? el("div", {class: "library-broken"}, el("div", {}, `读不了的文件（${lib.broken.length} 个）：`),
-      lib.broken.map((b) => el("div", {class: "bad"}, `${b.file}：${b.error}`)))
-    : null;
-  return [controls, list, broken].filter(Boolean);
-}
-
-function libraryRows(side) {
-  const lib = state.library;
-  const filter = state.libraryFilter;
-  const words = normalizeSearch(filter.query).split(" ").filter(Boolean);
-  const rows = lib.teams.filter((entry) => {
-    if (filter.sameLeague && entry.league !== state.config.league) return false;
-    const text = normalizeSearch([entry.name, entry.note, entry.file,
-      ...entry.team.member.flatMap((m) => [m.species, speciesName(m.species)])].join(" "));
-    return words.every((word) => text.includes(word));
+  return libraryPanel(state.library, {
+    league: state.config.league,
+    leagueName: leagueName(state.config.league),
+    filter: state.libraryFilter,
+    buttons: (entry) => el("button", {onclick: () => loadLibraryTeam(side, entry)},
+      `载入到 ${state.config.team[side].name || `第 ${side} 方`}`),
   });
-  if (rows.length === 0) {
-    return [el("p", {class: "muted"}, lib.teams.length ? "没有符合筛选的队伍。" : "队伍库还是空的：在一队上点“存进队伍库”。")];
-  }
-  return rows.map((entry) => el("div", {class: "library-row"},
-    el("div", {class: "library-main"},
-      el("b", {}, entry.name), " ",
-      el("span", {class: "muted"}, `${entry.league_name} · ${entry.file}`),
-      el("div", {}, entry.team.member.map((m) => speciesName(m.species)).join(" / ")),
-      entry.note ? el("div", {class: "muted"}, entry.note) : null,
-      entry.custom_files.length ? el("div", {class: "muted"}, `用到的覆盖文件：${entry.custom_files.join("、")}`) : null,
-    ),
-    el("button", {onclick: () => loadLibraryTeam(side, entry)}, `载入到 ${state.config.team[side].name || `第 ${side} 方`}`),
-  ));
 }
 
 /** 把库里的一队填到第 side 方：用到的覆盖文件自动勾上；联盟不同只提示，不强制。 */
 async function loadLibraryTeam(side, entry) {
-  const notes = [];
-  const available = state.options.custom_files.map((f) => f.name);
-  const missing = entry.custom_files.filter((name) => !state.config.custom_files.includes(name));
-  const added = missing.filter((name) => available.includes(name));
-  const absent = missing.filter((name) => !available.includes(name));
-  if (added.length) notes.push(`自动勾上了覆盖文件 ${added.join("、")}`);
-  if (absent.length) notes.push(`这一队用到的覆盖文件 ${absent.join("、")} 不在 data/custom/ 里`);
-  if (entry.league !== state.config.league) {
-    notes.push(`这一队记的联盟是${entry.league_name}，现在是${leagueName(state.config.league)}（不强制，按现在的联盟建配置）`);
-  }
+  const {customFiles, added, notes} = libraryLoadPlan(entry, state.config.custom_files,
+    state.options.custom_files.map((f) => f.name), state.config.league, leagueName(state.config.league));
   if (entry.unsupported.length) notes.push(`网页上改不了的策略参数没有载入：${entry.unsupported.join("、")}`);
 
-  state.config.custom_files = available.filter((name) => state.config.custom_files.includes(name) || added.includes(name));
+  state.config.custom_files = customFiles;
   state.config.team[side] = normalizeTeam(entry.team, side);
   state.libraryOpen = null;
   configChanged();

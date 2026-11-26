@@ -60,7 +60,11 @@ def test_static_files(base_url):
     status, content_type, body = request(f"{base_url}/stats.html")
     assert status == 200 and content_type.startswith("text/html")
     assert b'<script src="common.js"></script>' in body and b'<script src="stats.js"></script>' in body
-    for name in ("common.js", "stats.js"):
+    status, content_type, body = request(f"{base_url}/matchups.html")
+    assert status == 200 and content_type.startswith("text/html")
+    for name in ("common.js", "editor.js", "battle_view.js", "library.js", "matchups.js"):
+        assert f'<script src="{name}"></script>'.encode() in body
+    for name in ("common.js", "stats.js", "editor.js", "battle_view.js", "library.js", "matchups.js"):
         status, content_type, _ = request(f"{base_url}/{name}")
         assert status == 200 and content_type.startswith("text/javascript")
 

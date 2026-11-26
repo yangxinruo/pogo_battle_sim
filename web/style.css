@@ -306,3 +306,28 @@ details.br-all summary { cursor: pointer; margin: 8px 0; }
 .library-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); padding: 6px 0; }
 .library-main { min-width: 0; }
 .library-broken { margin-top: 6px; font-size: 12px; }
+
+/* ---- 1v1 九宫格（matchups.html，4g） ---- */
+.group-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; margin: 4px 0 8px; }
+.group-head h2 { margin: 0; }
+#pool-list + .group-head { margin-top: 20px; }
+.policy { margin-top: 12px; gap: 8px 16px; }
+label.description input { width: 40em; max-width: 70vw; }
+.pool-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; border-top: 1px solid var(--border); padding: 8px 0; }
+.pool-name { width: 14em; }
+h3 { font-size: 14px; margin: 16px 0 6px; }
+td.rating-cell { text-align: right; font-variant-numeric: tabular-nums; }
+td.rating-cell.win { font-weight: 700; }
+td.rating-cell.clickable { cursor: pointer; }
+td.rating-cell.clickable:hover { outline: 2px solid #6366f1; outline-offset: -2px; }
+td.rating-cell.selected { outline: 2px solid #111827; outline-offset: -2px; }
+td.flash { outline: 3px solid #f59e0b !important; outline-offset: -3px; }
+table.matchup-table { font-size: 13px; }
+table.matchup-table th.sortable { cursor: pointer; user-select: none; }
+table.matchup-table th.sortable:hover { background: #e5e7eb; }
+table.matchup-table tbody tr:hover td:not(.rating-cell) { background: var(--side-0-light); }
+.view-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 6px 0; }
+.grids { display: flex; flex-wrap: wrap; gap: 16px; margin: 12px 0; }
+.grid-box table { width: auto; }
+details.opponents-details summary { cursor: pointer; margin: 12px 0 6px; color: var(--muted); }
+.battle-view > .card:first-child { border-left: 4px solid #6366f1; }
