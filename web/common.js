@@ -1,5 +1,5 @@
 "use strict";
-// 两个页面（index.html 打一场 3v3、stats.html 能力值排序）共用的小工具，在各页自己的脚本之前加载。
+// 各个页面（index.html 打一场 3v3、stats.html 能力值排序……）共用的小工具，最先加载。
 // 和其他脚本一样只负责显示，不算任何东西。
 
 /** 建一个元素。attrs 里 on* 是事件，class 是类名；children 可以是元素、文字或数组。 */

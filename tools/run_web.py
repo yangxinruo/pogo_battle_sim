@@ -1,4 +1,5 @@
-"""本地网页界面（第 4 步）：启动一个只给本机用的服务器，在浏览器里选队伍、打 3v3、搜索应对、存队伍、看时间线、排能力值。
+"""本地网页界面（第 4 步）：启动一个只给本机用的服务器，在浏览器里选队伍、打 3v3、搜索应对、存队伍、看时间线、
+跑 1v1 九宫格、排能力值。
 
 用法（在仓库根目录）：
     .venv/bin/python -m tools.run_web                  # 启动后自动打开 http://127.0.0.1:8000
@@ -23,6 +24,11 @@
     POST /api/team-library/save        把一队存进队伍库（同名的要带 overwrite 才覆盖；网页不能删除）
     POST /api/export-config            把页面上的配置写成 3v3 配置文件（TOML）
     POST /api/import-config            从 3v3 配置文件（TOML 文本）导入
+    GET  /api/matchup-options          1v1 九宫格页的选项：策略参数、环境前 N 能选什么、例子配置
+    POST /api/matchups                 跑 1v1 九宫格（每个测试对象对手写的对手和环境前 N，0–2 盾对 0–2 盾）
+    POST /api/matchup-battle           九宫格里的一场：过程图和逐回合时间线
+    POST /api/export-matchups          把页面上的九宫格配置写成配置文件（TOML）
+    POST /api/import-matchups          从九宫格的配置文件（TOML 文本）导入
 配置写错时回 400 和 {"error": "中文说明"}；服务器里的意外错误回 500，详细信息打印在终端。
 """
 
@@ -52,6 +58,7 @@ STATIC_TYPES = {
 # 路径 → 处理函数。GET 的参数是查询字符串（每个键一个列表），POST 的参数是请求体里的 JSON。
 GET_API: dict[str, Callable[[dict[str, list[str]]], Any]] = {
     "/api/options": lambda query: web_api.options(),
+    "/api/matchup-options": lambda query: web_api.matchup_options(),
     "/api/team-library": lambda query: web_api.library_payload(),
     "/api/species": lambda query: web_api.species_catalog(query.get("custom", []), query.get("league", [None])[0]),
     "/api/stats": lambda query: web_api.stat_table_payload(
@@ -66,6 +73,10 @@ POST_API: dict[str, Callable[[Any], Any]] = {
     "/api/team-library/save": web_api.save_library_team,
     "/api/export-config": web_api.export_team_battle,
     "/api/import-config": web_api.import_team_battle,
+    "/api/matchups": web_api.matchups,
+    "/api/matchup-battle": web_api.matchup_battle,
+    "/api/export-matchups": web_api.export_matchups,
+    "/api/import-matchups": web_api.import_matchups,
 }
 
 

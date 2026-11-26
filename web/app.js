@@ -1,36 +1,38 @@
 "use strict";
-// 网页界面（第 4 步，4a）：选队伍、打一场 3v3、看结果和逐回合时间线。
+// "打一场 3v3"页（第 4 步，4a 起）：选队伍、打一场 3v3、看结果和逐回合时间线；手动对战、搜索应对、队伍库。
 //
 // 这里只负责填表和显示，不算任何东西：建配置、检查、对战、统计都在 Python 引擎里，
 // 通过 tools/run_web.py 的接口拿结果（每个接口返回什么见 pogo_sim/web_api.py）。
 // 页面上的配置和 3v3 配置文件（pogo_sim/team_battle.py 开头）写法一样；浏览器会记住上次填的（localStorage）。
+// 和九宫格页共用的部分：一只宝可梦的编辑器在 editor.js，过程图、时间线等一场对战的显示在 battle_view.js。
 
 const STORAGE_KEY = "pogo_sim.team_battle.config.v1";
-const SIDES = [0, 1];
-const BUILD_DELAY_MS = 300; // 改完一只后等这么久再请服务器建配置（连续输入时只请一次）
 
 const state = {
   options: null, // GET /api/options：下拉选项和例子配置
-  catalog: null, // GET /api/species：{species: [...], moves: {招式 ID: {...}}}
-  speciesById: new Map(),
   config: null, // 页面上的配置（normalizeConfig）；发给服务器前用 requestConfig 整理
-  builds: [[], []], // 每只的建配置结果（POST /api/build）：{info} 或 {error}
-  buildTimers: new Map(),
-  buildSeq: new Map(), // 每只最新一次建配置请求的序号：旧请求的结果晚到时丢掉
-  openDetails: new Set(), // 展开了"更多设置"的是哪几只（重新画这一只时保持展开）
   result: null, // POST /api/team-battle 的结果（手动对战打完以后是那一场的结果；搜索应对时是正在看的那一场）
   bestResponse: null, // POST /api/best-response 的结果（4e）；打一场、手动对战打完时清掉
   library: null, // GET /api/team-library 的结果（4f）；打开队伍库时重新读
   libraryOpen: null, // 哪一队下面打开了"从队伍库载入"（0 / 1 / null）
   libraryFilter: {sameLeague: true, query: ""},
   manual: null, // 手动对战：{config, side, decisions, data（服务器最近一次的回答）, seenEvents, pending}
-  showDecisions: true, // 时间线里显示决定和原因
 };
 
 // ---- 小工具（其余在 common.js） ----
 
+/** 一只宝可梦在页面上的名字（editor.js 的 key）。 */
 function memberKey(side, slot) {
   return `${side}-${slot}`;
+}
+
+/** 第 side 方第 slot 只的编辑器（editor.js）。 */
+function teamMemberEditor(side, slot) {
+  return memberEditor(memberKey(side, slot), state.config.team[side].member[slot], {
+    role: slot === 0 ? "首发" : `后备 ${slot}`,
+    settings: () => ({league: state.config.league, season: state.config.season, custom_files: state.config.custom_files}),
+    onChange: configChanged,
+  });
 }
 
 // ---- 配置 ----
@@ -54,32 +56,6 @@ function normalizeTeam(team, side) {
     policy: {switching: team.policy?.switching ?? state.options.switching[0].key},
     member: Array.from({length: size}, (_, slot) => normalizeMember(team.member?.[slot] ?? {})),
   };
-}
-
-function normalizeMember(member) {
-  return {
-    species: member.species ?? "",
-    fast: member.fast ?? "",
-    charged: [...(member.charged ?? [])],
-    label: member.label ?? "",
-    ivs: member.ivs ?? [null, null, null], // 三项都填了才发给服务器，否则按赛季规则取 IV 排名第 1
-    level: member.level ?? null,
-    best_buddy: member.best_buddy ?? false,
-    mega_level: member.mega_level ?? null,
-    outside_movepool: member.outside_movepool ?? false,
-  };
-}
-
-/** 一只宝可梦发给服务器的写法：同配置文件里的 [[team.member]]，没填的可选项不写。 */
-function memberRequest(member) {
-  const out = {species: member.species, fast: member.fast, charged: member.charged.filter(Boolean)};
-  if (member.label) out.label = member.label;
-  if (member.ivs.every((v) => Number.isInteger(v))) out.ivs = member.ivs;
-  if (member.level !== null) out.level = member.level;
-  if (member.best_buddy) out.best_buddy = true;
-  if (member.mega_level !== null) out.mega_level = member.mega_level;
-  if (member.outside_movepool) out.outside_movepool = true;
-  return out;
 }
 
 /** 打一场时发给服务器的配置：同 3v3 配置文件。 */
@@ -117,48 +93,6 @@ function configChanged() {
   if (note) note.hidden = false;
 }
 
-// ---- 宝可梦和招式的显示 ----
-
-/** 宝可梦名字后面的说明：属性、覆盖文件、未实装、PvPoke 在这个联盟的排名。 */
-function speciesFacts(species) {
-  const facts = [species.types.join("/")];
-  if (species.custom) facts.push("覆盖文件");
-  if (!species.released) facts.push("未实装");
-  if (species.rank) facts.push(`PvPoke 第 ${species.rank}`);
-  if (species.mega_rank) facts.push(`Mega 版排名第 ${species.mega_rank}`);
-  return facts.join(" · ");
-}
-
-function moveText(moveId) {
-  const move = state.catalog.moves[moveId];
-  if (!move) return `${moveId}（没有这个招式）`;
-  if (move.fast) {
-    return `${move.name} · ${move.type} · 威力 ${move.power} · +${move.energy} 能量 · ${move.turns} 回合`;
-  }
-  return `${move.name} · ${move.type} · 威力 ${move.power} · ${move.energy} 能量`;
-}
-
-/** 下拉框里能选的招式：招式池（勾了"招式池外"时是全部同类招式），现在选的总在里面。 */
-function moveChoices(ids, current, optional) {
-  const list = [...ids];
-  if (current && !list.includes(current)) list.unshift(current);
-  const choices = list.map((id) => [id, moveText(id)]);
-  return optional ? [["", "（不带）"], ...choices] : choices;
-}
-
-function allMoves(fast) {
-  return Object.entries(state.catalog.moves).filter(([, m]) => m.fast === fast).map(([id]) => id).sort();
-}
-
-/** 选了宝可梦以后先填的配招：PvPoke 在这个联盟的推荐配招，没有就取招式池里的前几个。 */
-function defaultMoves(species) {
-  if (species.recommended) {
-    const [fast, ...charged] = species.recommended;
-    return {fast, charged};
-  }
-  return {fast: species.fast[0] ?? "", charged: species.charged.slice(0, 2)};
-}
-
 // ---- 设置 ----
 
 function renderSettings() {
@@ -171,7 +105,7 @@ function renderSettings() {
       configChanged();
       await reloadCatalog(); // 推荐配招和排名跟联盟走
       renderTeams();
-      rebuildAll();
+      rebuildMembers();
     },
     {id: "league"},
   ));
@@ -181,7 +115,7 @@ function renderSettings() {
     (value) => {
       config.season = value;
       configChanged();
-      rebuildAll();
+      rebuildMembers();
     },
     {id: "season"},
   ));
@@ -197,7 +131,7 @@ function renderSettings() {
         configChanged();
         await reloadCatalog();
         renderTeams();
-        rebuildAll();
+        rebuildMembers();
       },
     }),
     ` 覆盖文件 ${file.name}`,
@@ -207,132 +141,7 @@ function renderSettings() {
 }
 
 async function reloadCatalog() {
-  const params = new URLSearchParams({league: state.config.league});
-  for (const name of state.config.custom_files) params.append("custom", name);
-  state.catalog = await api(`/api/species?${params}`);
-  state.speciesById = new Map(state.catalog.species.map((s) => [s.id, s]));
-  for (const species of state.catalog.species) species.nameKey = normalizeSearch(species.name);
-}
-
-// ---- 选宝可梦：可以搜的下拉框 ----
-// 点一下输入框就列出全部宝可梦（有 PvPoke 排名时按这个联盟的排名，排名外的按图鉴编号）。
-// 输入名字的一部分可以缩小范围：拆成几个词，每个词都要在 web_api.search_text 给的文字里出现，不分先后，
-// 所以 "mega venu"、"venusaur mega"、"zygarde 100"、"legendary" 都能搜到。
-// 选好一只以后，旁边的"形态"下拉框列出同一图鉴编号的各形态（普通、暗影、Mega……），可以直接换。
-
-const PICKER_LIMIT = 100; // 下拉框里最多列出几个（太多时继续输入缩小范围）
-
-/** 搜宝可梦，返回排好序的列表。
- *  排序：名字以输入开头的最前；其次每个词都是某个词的开头；然后按 PvPoke 普通排名（排名外的在后面）、图鉴顺序。 */
-function searchSpecies(query) {
-  const q = normalizeSearch(query);
-  const words = q.split(" ").filter(Boolean);
-  const found = [];
-  state.catalog.species.forEach((species, index) => {
-    const text = ` ${species.search}`;
-    if (!words.every((w) => text.includes(w))) return;
-    let tier = 2;
-    if (species.nameKey.startsWith(q)) tier = 0;
-    else if (words.every((w) => text.includes(` ${w}`))) tier = 1;
-    found.push({species, tier, rank: species.rank ?? Infinity, index});
-  });
-  found.sort((a, b) => a.tier - b.tier || (a.rank - b.rank || 0) || a.index - b.index);
-  return found.map((f) => f.species);
-}
-
-function pickerNote(typed, count) {
-  const hint = "名字用英文，几个词不分先后，如 mega venu、zygarde 100";
-  if (typed) return count ? `搜到 ${count} 个（↑↓ 选，回车确定，Esc 取消）` : `没有搜到。${hint}`;
-  const ranked = state.catalog.species.some((s) => s.rank);
-  const order = ranked ? "按 PvPoke 这个联盟的排名列出（排名外的和 Mega 按图鉴编号排在后面）" : "按图鉴编号列出";
-  return `${order}。输入可以搜：${hint}`;
-}
-
-/** 选宝可梦的输入框和下拉列表。打开时输入框先清空（原来的名字留作灰字提示），没选就关掉时恢复原样。 */
-function speciesPicker(side, slot, member, species) {
-  const currentText = species ? species.name : member.species;
-  const input = el("input", {
-    class: "species",
-    value: currentText,
-    placeholder: "点一下选，或输入名字搜",
-    autocomplete: "off",
-    spellcheck: "false",
-  });
-  const menu = el("div", {class: "species-menu", hidden: true});
-  let results = [];
-  let active = 0;
-
-  const optionNodes = () => menu.querySelectorAll(".species-option");
-  const highlight = (i) => {
-    const nodes = optionNodes();
-    if (nodes.length === 0) return;
-    active = Math.max(0, Math.min(i, nodes.length - 1));
-    nodes.forEach((node, j) => node.classList.toggle("active", j === active));
-    nodes[active].scrollIntoView({block: "nearest"});
-  };
-  const show = () => {
-    const typed = input.value.trim() !== "";
-    results = searchSpecies(input.value);
-    const rows = results.slice(0, PICKER_LIMIT).map((s, i) => el("div", {
-      class: "species-option",
-      onmousedown: (e) => { e.preventDefault(); pick(s.id); }, // preventDefault：不让输入框先失去焦点
-      onmousemove: () => { if (active !== i) highlight(i); },
-    }, typeDots(s.types), el("span", {class: "option-name"}, s.name), el("span", {class: "muted"}, speciesFacts(s))));
-    if (results.length > PICKER_LIMIT) {
-      rows.push(el("div", {class: "menu-note"}, `还有 ${results.length - PICKER_LIMIT} 个没列出，继续输入可以缩小范围`));
-    }
-    menu.replaceChildren(el("div", {class: "menu-note"}, pickerNote(typed, results.length)), ...rows);
-    menu.hidden = false;
-    menu.scrollTop = 0;
-    highlight(0);
-  };
-  const close = () => {
-    menu.hidden = true;
-    input.value = currentText;
-    input.placeholder = "点一下选，或输入名字搜";
-  };
-  const open = () => {
-    input.value = "";
-    input.placeholder = currentText || "点一下选，或输入名字搜";
-    show();
-  };
-  const pick = (id) => {
-    close();
-    if (id === member.species) input.blur(); // 选回原来那只：配招不动
-    else setSpecies(side, slot, id);
-  };
-
-  input.addEventListener("focus", open);
-  input.addEventListener("click", () => { if (menu.hidden) open(); });
-  input.addEventListener("input", show);
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      if (menu.hidden) open();
-      else highlight(active + (e.key === "ArrowDown" ? 1 : -1));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (!menu.hidden && results.length > 0) pick(results[active].id);
-    } else if (e.key === "Escape") {
-      close();
-      input.blur();
-    }
-  });
-  input.addEventListener("blur", () => {
-    if (menu.hidden) return;
-    // 输入了完整的名字或 ID 但没点选：也算选了；其他情况恢复原样
-    const q = normalizeSearch(input.value);
-    const exact = q && state.catalog.species.find((s) => s.nameKey === q || normalizeSearch(s.id) === q);
-    if (exact) pick(exact.id);
-    else close();
-  });
-  return el("span", {class: "species-picker"}, input, menu);
-}
-
-/** 同一图鉴编号的各形态（普通、暗影、Mega、地区形态……）；只有一种时为空。 */
-function formsOf(species) {
-  const forms = state.catalog.species.filter((s) => s.dex === species.dex);
-  return forms.length > 1 ? forms : [];
+  await loadCatalog(state.config.league, state.config.custom_files);
 }
 
 // ---- 两队 ----
@@ -340,9 +149,6 @@ function formsOf(species) {
 function renderTeams() {
   renderSideSelects();
   document.getElementById("teams").replaceChildren(...SIDES.map(renderTeam));
-  for (const side of SIDES) {
-    state.config.team[side].member.forEach((_, slot) => renderBuild(side, slot));
-  }
 }
 
 function renderTeam(side) {
@@ -366,200 +172,8 @@ function renderTeam(side) {
       ),
     ),
     state.libraryOpen === side ? el("div", {class: "library", id: `library-${side}`}, libraryContent(side)) : null,
-    team.member.map((_, slot) => renderMember(side, slot)),
+    team.member.map((_, slot) => teamMemberEditor(side, slot)),
   );
-}
-
-function renderMember(side, slot) {
-  const member = state.config.team[side].member[slot];
-  const species = state.speciesById.get(member.species);
-  const changed = () => memberChanged(side, slot);
-  const setCharged = (i) => (value) => {
-    member.charged[i] = value;
-    changed();
-  };
-
-  let speciesNote = "";
-  if (species) speciesNote = speciesFacts(species);
-  else if (member.species) speciesNote = el("span", {class: "bad"}, "没有这个宝可梦");
-  const forms = species ? formsOf(species) : [];
-
-  const moves = [];
-  if (species) {
-    const fastIds = member.outside_movepool ? allMoves(true) : species.fast;
-    const chargedIds = member.outside_movepool ? allMoves(false) : species.charged;
-    moves.push(
-      el("span", {}, "快招"),
-      select(moveChoices(fastIds, member.fast, false), member.fast, (v) => { member.fast = v; changed(); }),
-      el("span", {}, "大招 1"),
-      select(moveChoices(chargedIds, member.charged[0], false), member.charged[0], setCharged(0)),
-      el("span", {}, "大招 2"),
-      select(moveChoices(chargedIds, member.charged[1], true), member.charged[1] ?? "", setCharged(1)),
-    );
-    if (species.extra_charged.length > 0) {
-      moves.push(
-        el("span", {}, "大招 3"),
-        select(moveChoices(species.extra_charged, member.charged[2], true), member.charged[2] ?? "", setCharged(2)),
-      );
-    }
-  }
-
-  return el("div", {class: "member", id: `member-${memberKey(side, slot)}`},
-    el("div", {class: "member-head"},
-      el("span", {class: "role"}, slot === 0 ? "首发" : `后备 ${slot}`),
-      speciesPicker(side, slot, member, species),
-      forms.length ? el("label", {class: "forms", title: "同一图鉴编号的其他形态：普通、暗影、Mega、地区形态……"}, "形态 ",
-        select(forms.map((s) => [s.id, s.name]), species.id, (id) => setSpecies(side, slot, id))) : null,
-      el("span", {class: "muted"}, speciesNote),
-    ),
-    moves.length ? el("div", {class: "moves"}, moves) : null,
-    renderDetails(side, slot, member, species),
-    el("div", {class: "build", id: `build-${memberKey(side, slot)}`}),
-  );
-}
-
-/** "更多设置"：名字、IV、等级、挚友、Mega 等级、招式池外的招，以及建配置的说明。 */
-function renderDetails(side, slot, member, species) {
-  const key = memberKey(side, slot);
-  const changed = () => memberChanged(side, slot);
-  const number = (value, attrs, onValue) => el("input", {
-    type: "number",
-    value: value ?? "",
-    ...attrs,
-    oninput: (e) => {
-      const v = e.target.value === "" ? null : Number(e.target.value);
-      onValue(Number.isNaN(v) ? null : v);
-      changed();
-    },
-  });
-  const ivNames = ["攻", "防", "HP"];
-
-  const details = el("details", {
-    open: state.openDetails.has(key),
-    ontoggle: (e) => {
-      if (e.target.open) state.openDetails.add(key);
-      else state.openDetails.delete(key);
-    },
-  },
-    el("summary", {}, "更多设置（IV、等级、名字……）"),
-    el("div", {class: "details-grid"},
-      el("label", {}, "名字 ", el("input", {
-        value: member.label,
-        placeholder: species?.name ?? "",
-        oninput: (e) => { member.label = e.target.value; changed(); },
-      })),
-      el("label", {}, "IV ",
-        ivNames.map((name, i) => number(member.ivs[i], {min: 0, max: 15, step: 1, placeholder: name, title: name},
-          (v) => { member.ivs[i] = v; }))),
-      el("label", {}, "等级 ", number(member.level, {min: 1, max: 55, step: 0.5, placeholder: "自动"},
-        (v) => { member.level = v; })),
-      el("label", {}, el("input", {
-        type: "checkbox",
-        checked: member.best_buddy,
-        onchange: (e) => { member.best_buddy = e.target.checked; changed(); },
-      }), " 挚友"),
-      species?.mega ? el("label", {}, "Mega 等级 ", select(
-        [["", "自动"], [1, "1"], [2, "2"], [3, "3"], [4, "4"]],
-        member.mega_level ?? "",
-        (v) => { member.mega_level = v === "" ? null : Number(v); changed(); },
-      )) : null,
-      el("label", {}, el("input", {
-        type: "checkbox",
-        checked: member.outside_movepool,
-        onchange: (e) => {
-          member.outside_movepool = e.target.checked;
-          refreshMember(side, slot); // 能选的招式变了
-          changed();
-        },
-      }), " 允许招式池外的招"),
-    ),
-    el("div", {class: "muted"}, "IV 三项都填才生效；不填 IV 和等级时按赛季规则取 IV 排名第 1 和合法的最高等级。"),
-    el("ul", {class: "notes", id: `notes-${key}`}),
-  );
-  return details;
-}
-
-function refreshMember(side, slot) {
-  document.getElementById(`member-${memberKey(side, slot)}`).replaceWith(renderMember(side, slot));
-  renderBuild(side, slot);
-}
-
-/** 选了宝可梦（ID）：换成它的推荐配招。 */
-function setSpecies(side, slot, id) {
-  const member = state.config.team[side].member[slot];
-  member.species = id;
-  const species = state.speciesById.get(id);
-  if (species) {
-    const moves = defaultMoves(species);
-    member.fast = moves.fast;
-    member.charged = moves.charged;
-    if (!species.mega) member.mega_level = null;
-  }
-  refreshMember(side, slot);
-  memberChanged(side, slot);
-}
-
-function memberChanged(side, slot) {
-  configChanged();
-  scheduleBuild(side, slot);
-}
-
-// ---- 建配置（服务器算 CP、等级、IV） ----
-
-function scheduleBuild(side, slot) {
-  const key = memberKey(side, slot);
-  clearTimeout(state.buildTimers.get(key));
-  state.buildTimers.set(key, setTimeout(() => runBuild(side, slot), BUILD_DELAY_MS));
-}
-
-function rebuildAll() {
-  for (const side of SIDES) {
-    state.config.team[side].member.forEach((_, slot) => scheduleBuild(side, slot));
-  }
-}
-
-async function runBuild(side, slot) {
-  const key = memberKey(side, slot);
-  const seq = (state.buildSeq.get(key) ?? 0) + 1;
-  state.buildSeq.set(key, seq);
-  const member = state.config.team[side].member[slot];
-  let build;
-  if (!member.species) {
-    build = {error: "还没选宝可梦"};
-  } else {
-    try {
-      const {league, season, custom_files} = state.config;
-      build = {info: await api("/api/build", {league, season, custom_files, member: memberRequest(member)})};
-    } catch (e) {
-      build = {error: e.message};
-    }
-  }
-  if (state.buildSeq.get(key) !== seq) return; // 这期间又改过，以后面那次为准
-  state.builds[side][slot] = build;
-  renderBuild(side, slot);
-}
-
-function renderBuild(side, slot) {
-  const key = memberKey(side, slot);
-  const box = document.getElementById(`build-${key}`);
-  const notes = document.getElementById(`notes-${key}`);
-  if (!box) return;
-  const build = state.builds[side][slot];
-  if (!build) {
-    box.replaceChildren(el("span", {class: "muted"}, "……"));
-    return;
-  }
-  if (build.error) {
-    box.replaceChildren(el("span", {class: "bad"}, build.error));
-    notes?.replaceChildren();
-    return;
-  }
-  const info = build.info;
-  const parts = [`CP ${info.cp}`, `${info.level} 级`, `IV ${info.ivs.join("/")}`];
-  if (info.mega_level !== null) parts.push(`Mega 等级 ${info.mega_level}`);
-  parts.push(`HP ${info.hp}`, `攻 ${info.atk.toFixed(1)}`, `防 ${info.def.toFixed(1)}`);
-  box.replaceChildren(el("span", {}, parts.join(" · ")));
-  notes?.replaceChildren(...info.notes.map((note) => el("li", {}, note)));
 }
 
 // ---- 打一场 ----
@@ -592,31 +206,6 @@ function resetToExample() {
 
 // ---- 结果 ----
 
-function card(title, ...content) {
-  return el("div", {class: "card"}, el("h2", {}, title), ...content);
-}
-
-/** 表格。rows 的每一行是格子的数组，或者 {attrs, cells}（给这一行加 id、事件等）。 */
-function table(header, rows, attrs = {}) {
-  const cell = (c) => (c instanceof Node && c.tagName === "TD" ? c : el("td", {}, c));
-  const row = (r) => (Array.isArray(r) ? el("tr", {}, r.map(cell)) : el("tr", r.attrs, r.cells.map(cell)));
-  return el("div", {class: "table-wrap"}, el("table", attrs,
-    el("thead", {}, el("tr", {}, header.map((h) => (h instanceof Node ? h : el("th", {}, h))))),
-    el("tbody", {}, rows.map(row))));
-}
-
-function hpBar(hp, max) {
-  const fraction = max > 0 ? hp / max : 0;
-  const level = fraction > 0.5 ? "high" : fraction > 0.25 ? "mid" : "low";
-  return el("span", {class: "hp"},
-    el("span", {class: "bar"}, el("span", {class: `fill ${level}`, style: `width: ${Math.round(fraction * 100)}%; display: block;`})),
-    `${hp} / ${max}`);
-}
-
-function nameOf(result, side, slot) {
-  return el("span", {class: `name side-${side}`}, result.teams[side].names[slot]);
-}
-
 function renderResult() {
   const r = state.result;
   const section = document.getElementById("result");
@@ -637,7 +226,10 @@ function renderResult() {
         team.members.map((m, slot) => `${slot ? "；" : ""}${team.names[slot]} CP ${m.cp} ${m.level} 级 IV ${m.ivs.join("/")}`),
       )),
     ),
-    card("战斗过程", ...chartView(r)),
+    card("战斗过程", ...chartView(r, {
+      marks: changes(r).map((change, i) => ({turn: change.turn, label: `改${i + 1}`})),
+      note: changes(r).length ? "绿色虚线是搜索应对改了的决定（改1、改2……，同上面的表）。" : "",
+    })),
     card("对位分段", ...segmentsView(r)),
     card("每只的情况",
       el("p", {class: "muted"}, "挨大招：被大招打中时开盾挡下的次数 / 队伍还有盾但没开的次数。被盾挡下的大招算 1 点伤害。"),
@@ -645,7 +237,7 @@ function renderResult() {
     card("开局对位评分", ...openingTables(r)),
     card("换人", switchesTable(r)),
     card("大招和开盾", chargedTable(r)),
-    card("时间线", ...timelineView(r)),
+    card("时间线", ...timelineView(r, {highlight: changedTurns(r)})),
   );
 }
 
@@ -713,358 +305,6 @@ function chargedTable(r) {
     el("td", {class: "text"}, c.shield_reason ?? "没有盾"),
   ]);
   return table(["回合", "出招", "大招", "挨打", "结果", "开不开盾的原因"], rows);
-}
-
-// ---- 时间线 ----
-
-function timelineView(r) {
-  const holder = el("div", {id: "timeline-table"});
-  const controls = el("div", {class: "timeline-controls"},
-    el("label", {}, el("input", {
-      type: "checkbox",
-      checked: state.showDecisions,
-      onchange: (e) => {
-        state.showDecisions = e.target.checked;
-        holder.replaceChildren(timelineTable(r));
-      },
-    }), " 显示决定和原因"),
-    el("span", {class: "muted"}, "　每回合一行（没有事件的回合不列）；最后一列是回合结束时双方在场那只的 HP、能量和全队剩下的盾。"),
-  );
-  holder.replaceChildren(timelineTable(r));
-  return [controls, holder];
-}
-
-function eventClass(event) {
-  if (event.type === "move") return event.data.is_charged ? "ev charged" : "ev fast";
-  return `ev ${event.type}`;
-}
-
-function sideState(r, side, snapshot) {
-  const team = r.teams[side];
-  const active = snapshot.active;
-  return el("div", {class: "state-line"},
-    nameOf(r, side, active), " ",
-    hpBar(snapshot.hp, team.members[active].hp),
-    ` · 能量 ${snapshot.energy} · 盾 ${snapshot.shields}`);
-}
-
-function timelineTable(r) {
-  const rows = [];
-  for (const entry of r.timeline) {
-    const events = entry.events.filter((e) => state.showDecisions || e.type !== "decision");
-    if (events.length === 0) continue;
-    const cells = SIDES.map((side) => el("td", {class: `events-${side}`},
-      events.filter((e) => e.side === side).map((e) => el("div", {class: eventClass(e)},
-        el("span", {class: "who"}, r.teams[side].names[e.slot]), " ", e.text))));
-    const changed = changedTurns(r).has(entry.turn);
-    rows.push({attrs: {id: `turn-${entry.turn}`, class: changed ? "br-changed" : undefined}, cells: [
-      el("td", {class: "turn"}, `T${entry.turn}`),
-      ...cells,
-      entry.sides ? el("td", {}, SIDES.map((side) => sideState(r, side, entry.sides[side]))) : el("td", {}, ""),
-    ]});
-  }
-  return table(["回合", r.teams[0].name, r.teams[1].name, "回合结束时"], rows, {class: "timeline"});
-}
-
-// ---- 战斗过程图和对位分段（4b） ----
-//
-// 图的数据（招式带、逐回合的 HP 和能量、对位分段）都由服务器算好（pogo_sim/battle_summary.py、web_api.chart_payload），
-// 这里只把它们画成 SVG：上面两条是双方的招式带，下面两条是双方的 HP，共用一根横轴（回合）。
-
-const SVG_NS = "http://www.w3.org/2000/svg";
-const MEMBER_COLORS = [["#2563eb", "#0891b2", "#7c3aed"], ["#ea580c", "#ca8a04", "#db2777"]];
-// 招式带从上到下：两行文字标签（大招、换人），快招小块，倒下标记
-const CHART = {left: 110, right: 16, top: 8, laneHeight: 58, hpHeight: 92, gap: 10, minTurnWidth: 5};
-
-function svg(tag, attrs = {}, ...children) {
-  const node = document.createElementNS(SVG_NS, tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    if (value === undefined || value === null || value === false) continue;
-    if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-    else node.setAttribute(key, value);
-  }
-  for (const child of children.flat()) {
-    if (child === null || child === undefined || child === false) continue;
-    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
-  }
-  return node;
-}
-
-function memberColor(side, slot) {
-  return MEMBER_COLORS[side][slot % MEMBER_COLORS[side].length];
-}
-
-/** 对战时间（毫秒）写成"分:秒"，例如 1:05.5。 */
-function clock(ms) {
-  const seconds = ms / 1000;
-  const rest = seconds % 60;
-  const text = Number.isInteger(rest) ? String(rest).padStart(2, "0") : rest.toFixed(1).padStart(4, "0");
-  return `${Math.floor(seconds / 60)}:${text}`;
-}
-
-function chartLayout(turns, width) {
-  const {left, right, top, laneHeight, hpHeight, gap, minTurnWidth} = CHART;
-  const plotWidth = Math.max(width - left - right, turns * minTurnWidth);
-  const laneY = [top, top + laneHeight + gap];
-  const hpY = [laneY[1] + laneHeight + gap * 2, laneY[1] + laneHeight + gap * 3 + hpHeight];
-  const axisY = hpY[1] + hpHeight + 4;
-  return {
-    turns, plotWidth, laneY, hpY, axisY,
-    width: left + plotWidth + right,
-    height: axisY + 34,
-    // 第 t 回合占横轴上 [x(t - 1), x(t)] 这一格
-    x: (t) => left + (t / turns) * plotWidth,
-  };
-}
-
-function chartView(r) {
-  const legend = el("div", {class: "chart-legend"},
-    SIDES.map((side) => el("span", {class: "legend-team"},
-      el("span", {class: `name side-${side}`}, r.teams[side].name), "：",
-      r.teams[side].names.map((name, slot) => el("span", {class: "legend-item"},
-        el("span", {class: "swatch", style: `background: ${memberColor(side, slot)}`}), name)))),
-  );
-  const help = el("p", {class: "muted"},
-    "招式带：小块是快招（宽度是招式的回合数），竖条是大招（空心是被开盾挡下，旁边写伤害），紫线是换人，✕ 是倒下。" +
-    "HP：粗线是在场那只，细的淡线是后备，虚线是在场那只的能量（0–100）。鼠标移上去看这一回合的详情，点一下跳到下面时间线的那一行。" +
-    (changes(r).length ? "绿色虚线是搜索应对改了的决定（改1、改2……，同上面的表）。" : ""));
-  const holder = el("div", {class: "chart-holder", id: "chart-holder"});
-  // 先放进页面再画：要知道可用的宽度
-  requestAnimationFrame(() => drawChart(r, holder));
-  return [legend, help, holder];
-}
-
-function drawChart(r, holder) {
-  const chart = r.chart;
-  const layout = chartLayout(chart.turns, holder.clientWidth || 1000);
-  const {x, laneY, hpY, axisY} = layout;
-  const {laneHeight, hpHeight, left} = CHART;
-  const parts = [];
-
-  // 背景和左边的标签
-  for (const side of SIDES) {
-    const team = r.teams[side].name;
-    parts.push(
-      svg("rect", {x: left, y: laneY[side], width: layout.plotWidth, height: laneHeight, class: `lane-bg lane-${side}`}),
-      svg("text", {x: left - 8, y: laneY[side] + laneHeight / 2 + 4, class: `axis-label side-${side}`, "text-anchor": "end"}, `${team} 招式`),
-      svg("rect", {x: left, y: hpY[side], width: layout.plotWidth, height: hpHeight, class: "hp-bg"}),
-      svg("text", {x: left - 8, y: hpY[side] + hpHeight / 2 + 4, class: `axis-label side-${side}`, "text-anchor": "end"}, `${team} HP`),
-      svg("text", {x: left - 8, y: hpY[side] + 10, class: "axis-small", "text-anchor": "end"}, "100%"),
-      svg("text", {x: left - 8, y: hpY[side] + hpHeight, class: "axis-small", "text-anchor": "end"}, "0"),
-    );
-  }
-
-  // 横轴：每 10 回合（长的对战每 20 回合）一条线，下面写回合数和对战时间
-  const step = chart.turns > 200 ? 20 : 10;
-  for (let t = 0; t <= chart.turns; t += step) {
-    parts.push(
-      svg("line", {x1: x(t), x2: x(t), y1: laneY[0], y2: axisY, class: "grid"}),
-      svg("text", {x: x(t), y: axisY + 12, class: "axis-small", "text-anchor": "middle"}, `T${t}`),
-      svg("text", {x: x(t), y: axisY + 25, class: "axis-small", "text-anchor": "middle"}, clock(chart.elapsed_ms[t])),
-    );
-  }
-
-  // 对位分段的高亮（鼠标移到分段表的某一行时显示）
-  const band = svg("rect", {id: "segment-band", class: "segment-band", y: laneY[0], height: axisY - laneY[0], visibility: "hidden"});
-  parts.push(band);
-
-  for (const side of SIDES) {
-    parts.push(...laneShapes(r, side, layout), ...hpShapes(r, side, layout));
-  }
-
-  // 搜索应对改了的决定（4e）：绿色虚线，上面写第几个改动
-  changes(r).forEach((change, i) => {
-    const xm = (x(change.turn - 1) + x(change.turn)) / 2;
-    parts.push(
-      svg("line", {x1: xm, x2: xm, y1: laneY[0], y2: axisY, class: "br-mark"}),
-      svg("text", {x: xm + 2, y: axisY - 3, class: "br-mark-label"}, `改${i + 1}`),
-    );
-  });
-
-  // 鼠标所在的那一回合
-  const column = svg("rect", {class: "hover-column", y: laneY[0], height: axisY - laneY[0], visibility: "hidden"});
-  parts.push(column);
-  const node = svg("svg", {width: layout.width, height: layout.height, class: "chart"}, parts);
-  const tooltip = el("div", {class: "chart-tooltip", hidden: true});
-  const overlay = svg("rect", {x: left, y: 0, width: layout.plotWidth, height: axisY, fill: "transparent", class: "chart-overlay"});
-  const turnAt = (event) => {
-    const box = node.getBoundingClientRect();
-    const t = Math.ceil(((event.clientX - box.left - left) / layout.plotWidth) * chart.turns);
-    return Math.min(chart.turns, Math.max(1, t));
-  };
-  overlay.addEventListener("mousemove", (event) => {
-    const t = turnAt(event);
-    column.setAttribute("x", x(t - 1));
-    column.setAttribute("width", Math.max(2, x(t) - x(t - 1)));
-    column.setAttribute("visibility", "visible");
-    tooltip.replaceChildren(...turnDetails(r, t));
-    tooltip.hidden = false;
-    const flip = event.clientX > window.innerWidth - 460;
-    tooltip.style.left = `${flip ? event.clientX - 452 : event.clientX + 16}px`;
-    tooltip.style.top = `${Math.min(event.clientY + 16, window.innerHeight - tooltip.offsetHeight - 8)}px`;
-  });
-  overlay.addEventListener("mouseleave", () => {
-    column.setAttribute("visibility", "hidden");
-    tooltip.hidden = true;
-  });
-  overlay.addEventListener("click", (event) => jumpToTurn(turnAt(event)));
-  node.append(overlay);
-  holder.replaceChildren(node, tooltip);
-}
-
-/** 一方的招式带：快招小块、大招竖条、换人线、倒下标记。 */
-function laneShapes(r, side, layout) {
-  const {x, laneY, hpY} = layout;
-  const y = laneY[side];
-  const {laneHeight, hpHeight} = CHART;
-  const names = r.chart.move_names;
-  const shapes = [];
-  // 文字标签放两行：这一行的上一个标签还没结束，就放到另一行（按时间顺序画，所以只要记每行写到哪里）
-  const rowEnds = [-Infinity, -Infinity];
-  const textWidth = (text) => [...text].reduce((width, ch) => width + (ch.charCodeAt(0) > 255 ? 10 : 6), 0);
-  const label = (x0, text, attrs) => {
-    x0 = Math.min(x0, layout.width - 2 - textWidth(text));  // 靠右边的标签往左挪，不被切掉
-    let row = rowEnds.findIndex((end) => x0 >= end + 4);
-    if (row < 0) row = rowEnds[0] <= rowEnds[1] ? 0 : 1;
-    rowEnds[row] = x0 + textWidth(text);
-    return svg("text", {x: x0, y: y + 12 + row * 12, ...attrs}, text);
-  };
-  for (const item of r.chart.sides[side].lane) {
-    const color = memberColor(side, item.slot);
-    const x0 = x(item.start_turn - 1);
-    const x1 = x(item.end_turn);
-    const middle = (x(item.start_turn - 1) + x(item.start_turn)) / 2;
-    switch (item.kind) {
-      case "fast":
-        shapes.push(svg("rect", {x: x0 + 0.5, y: y + 32, width: Math.max(1, x1 - x0 - 1), height: 12, fill: color, rx: 1}));
-        break;
-      case "cancelled":
-        shapes.push(svg("rect", {x: x0 + 0.5, y: y + 32, width: Math.max(1, x1 - x0 - 1), height: 12, class: "cancelled", stroke: color}));
-        break;
-      case "charged":
-        shapes.push(
-          svg("rect", {x: middle - 3, y: y + 3, width: 6, height: laneHeight - 6, rx: 1,
-            fill: item.shielded ? "#fff" : color, stroke: color, "stroke-width": 2}),
-          label(middle + 5, `${names[item.move_id] ?? item.move_id} ${item.shielded ? "挡下" : item.damage}`,
-            {class: "charged-label", fill: color}),
-        );
-        break;
-      case "switch":
-        shapes.push(
-          svg("line", {x1: x0, x2: x0, y1: y, y2: y + laneHeight, class: "switch-line"}),
-          svg("line", {x1: x0, x2: x0, y1: hpY[side], y2: hpY[side] + hpHeight, class: "switch-line"}),
-          label(x0 + 3, `→ ${r.teams[side].names[item.slot]}`, {class: "switch-label"}),
-        );
-        break;
-      case "faint":
-        shapes.push(
-          svg("text", {x: middle, y: y + 56, class: "faint-mark", "text-anchor": "middle"}, "✕"),
-          svg("text", {x: middle, y: hpY[side] + hpHeight - 2, class: "faint-mark", "text-anchor": "middle"}, "✕"),
-        );
-        break;
-    }
-  }
-  return shapes;
-}
-
-/** 一方每只的 HP（在场时粗线、后备时细淡线）和在场时的能量（虚线），画成阶梯：第 t 回合末的值从 x(t) 起生效。 */
-function hpShapes(r, side, layout) {
-  const {x, hpY, turns} = layout;
-  const {hpHeight} = CHART;
-  const data = r.chart.sides[side];
-  const shapes = [];
-  const yOf = (fraction) => hpY[side] + hpHeight - 2 - fraction * (hpHeight - 6);
-  data.hp.forEach((series, slot) => {
-    const max = data.max_hp[slot];
-    let active = "";
-    let bench = "";
-    let energy = "";
-    for (let t = 1; t <= turns; t += 1) {
-      const piece = `M${x(t - 1)},${yOf(series[t - 1] / max)}H${x(t)}V${yOf(series[t] / max)}`;
-      if (data.active[t] === slot) {
-        active += piece;
-        const e = data.energy[slot];
-        energy += `M${x(t - 1)},${yOf(e[t - 1] / 100)}H${x(t)}V${yOf(e[t] / 100)}`;
-      } else {
-        bench += piece;
-      }
-    }
-    const color = memberColor(side, slot);
-    if (bench) shapes.push(svg("path", {d: bench, stroke: color, class: "hp-bench"}));
-    if (energy) shapes.push(svg("path", {d: energy, stroke: color, class: "energy-line"}));
-    if (active) shapes.push(svg("path", {d: active, stroke: color, class: "hp-active"}));
-  });
-  return shapes;
-}
-
-/** 鼠标所在那一回合的详情：对战时间、这一回合的事件（含决定和原因）、回合结束时双方的状态。 */
-function turnDetails(r, turn) {
-  const entry = r.timeline.find((e) => e.turn === turn);
-  const lines = [el("div", {class: "tip-title"}, `T${turn} · 对战时间 ${clock(r.chart.elapsed_ms[turn])}`)];
-  if (entry) {
-    for (const event of entry.events) {
-      lines.push(el("div", {class: eventClass(event)},
-        el("span", {class: `who name side-${event.side}`}, r.teams[event.side].names[event.slot]), " ", event.text));
-    }
-    if (entry.sides) lines.push(el("div", {class: "tip-state"}, SIDES.map((side) => sideState(r, side, entry.sides[side]))));
-  }
-  if (!entry || entry.events.length === 0) lines.splice(1, 0, el("div", {class: "muted"}, "这一回合没有结算的事件（快招还在进行）"));
-  return lines;
-}
-
-/** 跳到时间线里这一回合的那一行；没有那一行（没有事件）就跳到前面最近的一行。 */
-function jumpToTurn(turn) {
-  for (let t = turn; t >= 1; t -= 1) {
-    const row = document.getElementById(`turn-${t}`);
-    if (!row) continue;
-    row.scrollIntoView({behavior: "smooth", block: "center"});
-    row.classList.add("flash");
-    setTimeout(() => row.classList.remove("flash"), 1500);
-    return;
-  }
-}
-
-function segmentsView(r) {
-  const help = el("p", {class: "muted"},
-    "在场的两只不变的一段时间算一段，任一方换人就开始新的一段。HP 和能量是这一段开始之前 → 最后一回合结束时；" +
-    "大招后面是伤害，“挡下”是被对方开盾挡下；开盾是挡下对方大招的次数。鼠标移到一行上，图上会标出这一段。");
-  const rows = r.segments.map((segment, i) => ({
-    attrs: {
-      class: "segment-row",
-      onmouseenter: () => showSegmentBand(r, segment),
-      onmouseleave: () => document.getElementById("segment-band")?.setAttribute("visibility", "hidden"),
-    },
-    cells: [
-      el("td", {class: "num"}, segment.start_turn === segment.end_turn ? `${segment.start_turn}` : `${segment.start_turn}–${segment.end_turn}`),
-      ...SIDES.map((side) => el("td", {class: "text"}, segmentSideCell(r, segment, side))),
-      el("td", {class: "text"}, segment.end_text),
-    ],
-  }));
-  return [help, table(["回合", r.teams[0].name, r.teams[1].name, "怎么结束"], rows)];
-}
-
-function segmentSideCell(r, segment, side) {
-  const s = segment.sides[side];
-  const max = r.chart.sides[side].max_hp[s.slot];
-  const details = [`快招 ${s.fast_moves} 次`];
-  if (s.charged.length) details.push(`大招 ${segment.charged_text[side]}`);
-  if (s.shields_used) details.push(`开盾 ${s.shields_used} 次`);
-  return [
-    el("div", {},
-      el("span", {class: "who", style: `color: ${memberColor(side, s.slot)}`}, r.teams[side].names[s.slot]),
-      ` HP ${s.hp_start} → ${s.hp_end}（最大 ${max}）· 能量 ${s.energy_start} → ${s.energy_end}`),
-    el("div", {class: "muted"}, details.join(" · ")),
-  ];
-}
-
-function showSegmentBand(r, segment) {
-  const band = document.getElementById("segment-band");
-  if (!band) return;
-  const holder = document.getElementById("chart-holder");
-  const layout = chartLayout(r.chart.turns, holder.clientWidth || 1000);
-  band.setAttribute("x", layout.x(segment.start_turn - 1));
-  band.setAttribute("width", Math.max(2, layout.x(segment.end_turn) - layout.x(segment.start_turn - 1)));
-  band.setAttribute("visibility", "visible");
 }
 
 function downloadReport() {
@@ -1565,10 +805,6 @@ function bestResponseCard(br) {
 // 不能删除（要删就手动删文件）；同名的先问再覆盖。导入 / 导出的是 3v3 配置文件，和命令行同一格式。
 // 检查、写文件、读文件都在服务器（web_api 的 library_payload、save_library_team、import_team_battle、export_team_battle）。
 
-function speciesName(id) {
-  return state.speciesById.get(id)?.name ?? id;
-}
-
 function leagueName(cp) {
   return state.options.leagues.find((l) => l.cp === cp)?.name ?? `CP ${cp}`;
 }
@@ -1667,7 +903,7 @@ async function loadLibraryTeam(side, entry) {
     await start(); // 覆盖文件变了：重新读宝可梦列表
   } else {
     renderTeams();
-    rebuildAll();
+    rebuildMembers();
   }
   setStatus(`已载入 ${entry.name}（teams/${entry.file}）${notes.length ? `。${notes.join("；")}` : ""}`);
 }
@@ -1739,11 +975,11 @@ async function importConfig(file) {
 
 /** 按 state.config 画设置和两队，并请服务器建每只的配置。 */
 async function start() {
-  state.builds = [[], []];
+  forgetMembers();
   renderSettings();
   await reloadCatalog();
   renderTeams();
-  rebuildAll();
+  rebuildMembers();
 }
 
 async function init() {
@@ -1760,14 +996,6 @@ async function init() {
     if (file) importConfig(file);
   });
   document.addEventListener("keydown", onManualKey);
-  let resizeTimer;
-  window.addEventListener("resize", () => {  // 窗口宽度变了，按新的宽度重画过程图
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => {
-      const holder = document.getElementById("chart-holder");
-      if (state.result && holder) drawChart(state.result, holder);
-    }, 200);
-  });
   try {
     state.options = await api("/api/options");
     state.config = normalizeConfig(loadSaved() ?? state.options.example);

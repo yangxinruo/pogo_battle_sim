@@ -17,12 +17,13 @@ from pogo_sim.matchups import (
     format_pool_summary,
     format_report,
     load_matchup_config,
+    pool_summary,
     prepare_matchups,
     run_all,
     run_pools,
     shield_grid,
 )
-from pogo_sim.rankings import PoolSpec
+from pogo_sim.rankings import PoolSpec, prepare_pool
 
 EXAMPLE_CONFIG = REPO_ROOT / "experiments" / "gl_mega_froslass_top.toml"
 
@@ -251,3 +252,33 @@ def test_explicit_opponent_clashes_with_pool(tmp_path: Path) -> None:
     text = POOL_CONFIG + EXPLICIT_OPPONENT.replace('species = "azumarill"', 'label = "Melmetal"\nspecies = "azumarill"')
     with pytest.raises(MatchupConfigError, match="手写的对手和环境前 N（非 Mega 前 3（mega 排名））里有重名的 Melmetal"):
         prepare_matchups(load_matchup_config(_write(tmp_path, text)))
+
+
+# ---- 网页用的（4g） ----
+
+
+def test_pool_summary(pool_matchups) -> None:
+    """总表的数字（报告和网页共用）：同样盾数时赢了几只、九格一共赢了几格、全部评分的平均。"""
+    for pg in run_pools(pool_matchups):
+        for grids in pg.by_subject:
+            summary = pool_summary(grids)
+            assert summary.opponents == len(grids)
+            assert summary.same_shield_wins == tuple(
+                sum(1 for g in grids if g.ratings[s][s] > WIN_RATING) for s in range(3)
+            )
+            assert summary.wins == sum(1 for g in grids for r in g.all_ratings() if r > WIN_RATING)
+            ratings = [r for g in grids for r in g.all_ratings()]
+            assert summary.average == pytest.approx(sum(ratings) / len(ratings))
+
+
+def test_prepare_with_another_pool_builder(tmp_path: Path) -> None:
+    """建环境前 N 的函数可以换（网页换成带缓存的），结果相同。"""
+    calls = []
+
+    def build(gm, spec, league, season):
+        calls.append(spec.name)
+        return prepare_pool(gm, spec, league, season)
+
+    config = load_matchup_config(_write(tmp_path, POOL_CONFIG))
+    assert prepare_matchups(config, build) == prepare_matchups(config)
+    assert calls == ["Mega 前 2", "非 Mega 前 3（mega 排名）"]

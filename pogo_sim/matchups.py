@@ -45,7 +45,7 @@
 
 import csv
 import io
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -105,9 +105,16 @@ class MatchupConfig:
 def load_matchup_config(path: Path | str) -> MatchupConfig:
     """读取并检查对战配置文件（格式见模块说明）。写错时抛出 MatchupConfigError。"""
     path = Path(path)
-    raw = load_toml(path)
-    where = path.name
+    return parse_matchup_config(load_toml(path), path.name)
 
+
+def parse_matchup_config(raw: dict[str, Any], where: str) -> MatchupConfig:
+    """检查已经读进来的配置（和配置文件同样的键）。where 是报错信息的开头（文件名，网页是"网页"）。
+
+    网页发来的配置也走这里（web_api.py），所以检查和命令行完全相同。
+    """
+    if not isinstance(raw, dict):
+        raise MatchupConfigError(f"{where}：配置要写成表（键值对），得到 {type(raw).__name__}")
     check_unknown_keys(raw, _TOP_LEVEL_KEYS, where)
     for key in ("league", "season", "subject"):
         if key not in raw:
@@ -171,15 +178,22 @@ class Matchups:
     pools: tuple[Pool, ...] = ()  # 环境前 N
 
 
-def prepare_matchups(config: MatchupConfig) -> Matchups:
-    """加载覆盖文件，给每只宝可梦按赛季规则建配置，并检查招式。环境前 N 里建不了配置的跳过（报告里写明）。"""
+PoolBuilder = Callable[[GameMaster, PoolSpec, int, SeasonRules], Pool]
+
+
+def prepare_matchups(config: MatchupConfig, build_pool: PoolBuilder = prepare_pool) -> Matchups:
+    """加载覆盖文件，给每只宝可梦按赛季规则建配置，并检查招式。环境前 N 里建不了配置的跳过（报告里写明）。
+
+    build_pool 是建一组环境前 N 的函数，默认 rankings.prepare_pool。网页换成带缓存的同一个函数
+    （web_api.py：建环境前 N 比打九宫格慢得多，改测试对象时不用重建）。
+    """
     gm = load_gamemaster(custom_files=config.custom_files)
     subjects = _prepare_group(gm, config, config.subjects, "subject")
     opponents = _prepare_group(gm, config, config.opponents, "opponent")
     pools = []
     for spec in config.opponent_pools:
         try:
-            pool = prepare_pool(gm, spec, config.league, config.season)
+            pool = build_pool(gm, spec, config.league, config.season)
         except ValueError as e:
             raise MatchupConfigError(f"环境前 N（{spec.name}）：{error_message(e)}") from e
         clashes = sorted({p.label for p in opponents} & {p.label for p in pool.participants})
@@ -261,6 +275,26 @@ def fight(matchups: Matchups, sides: tuple[Team, Team]) -> BattleResult:
     """双方都用配置里的简单规则策略打一场。"""
     policy = matchups.config.policy
     return Battle(sides, (SimplePolicy(policy), SimplePolicy(policy))).run()
+
+
+def battle_names(subject: Participant, opponent: Participant) -> tuple[str, str]:
+    """一场里双方的名字。同名时（镜像对局）后面加上"（测试对象）""（对手）"，免得时间线里分不清。"""
+    if subject.label != opponent.label:
+        return subject.label, opponent.label
+    return f"{subject.label}（测试对象）", f"{opponent.label}（对手）"
+
+
+def format_outcome(names: tuple[str, str], result: BattleResult) -> str:
+    """一场 1v1 的一行中文结果（网页上看一场时用），例如"Azumarill 赢。评分 623 对 377；剩余 HP 45 对 0；……"。"""
+    outcome = "平局" if result.winner is None else f"{names[result.winner]} 赢"
+    if result.timed_out:
+        outcome += "（时间到）"
+    last = result.snapshots[-1].sides if result.snapshots else None
+    hp = f"剩余 HP {last[0].hp} 对 {last[1].hp}；" if last is not None else ""
+    return (
+        f"{outcome}。评分 {result.ratings[0]} 对 {result.ratings[1]}；{hp}"
+        f"{result.turns} 回合，对战时间 {result.elapsed_ms / 1000:g} 秒。"
+    )
 
 
 def shield_grid(matchups: Matchups, subject: Participant, opponent: Participant) -> ShieldGrid:
@@ -358,16 +392,35 @@ def _rating_cell(rating: int) -> str:
     return f"**{rating}**" if rating > WIN_RATING else str(rating)
 
 
+@dataclass(frozen=True)
+class PoolSummary:
+    """一个测试对象对一组环境前 N 的总计（报告的总表和网页共用）。"""
+
+    opponents: int  # 对手只数
+    same_shield_wins: tuple[int, ...]  # 双方同样 0 / 1 / 2 盾时赢了几只
+    wins: int  # 九种盾数一共赢了几格（满分 9 × 对手只数）
+    average: float  # 全部评分的平均
+
+
+def pool_summary(grids: Sequence[ShieldGrid]) -> PoolSummary:
+    n = len(grids)
+    return PoolSummary(
+        opponents=n,
+        same_shield_wins=tuple(sum(1 for g in grids if g.ratings[s][s] > WIN_RATING) for s in SHIELD_COUNTS),
+        wins=sum(g.wins for g in grids),
+        average=sum(g.average for g in grids) / n if n else 0.0,
+    )
+
+
 def format_pool_summary(matchups: Matchups, pool_grids: PoolGrids) -> str:
     """环境前 N 的总表：行是测试对象；双方同样盾数时赢了几只，九种盾数一共赢了几格，平均评分。"""
     header = ["测试对象", *(f"{s} 对 {s} 盾" for s in SHIELD_COUNTS), "九种盾数", "平均评分"]
     rows = []
     for subject, grids in zip(matchups.subjects, pool_grids.by_subject):
-        n = len(grids)
-        same = [f"赢 {sum(1 for g in grids if g.ratings[s][s] > WIN_RATING)} / {n}" for s in SHIELD_COUNTS]
-        total_wins = sum(g.wins for g in grids)
-        average = sum(g.average for g in grids) / n if n else 0.0
-        rows.append([marked(subject), *same, f"赢 {total_wins} / {9 * n}", f"{average:.0f}"])
+        summary = pool_summary(grids)
+        n = summary.opponents
+        same = [f"赢 {wins} / {n}" for wins in summary.same_shield_wins]
+        rows.append([marked(subject), *same, f"赢 {summary.wins} / {9 * n}", f"{summary.average:.0f}"])
     return format_table(header, rows)
 
 

@@ -6,15 +6,20 @@ import pytest
 
 from pogo_sim.battle import Battle
 from pogo_sim.combatant import UNCAPPED_CP, make_combatant
+from pogo_sim.config import load_toml
 from pogo_sim.matchups import (
     REPO_ROOT,
     MatchupConfigError,
     ShieldGrid,
+    battle_names,
+    fight,
     find_participant,
     format_grid,
+    format_outcome,
     format_report,
     load_matchup_config,
     make_sides,
+    parse_matchup_config,
     prepare_matchups,
     run_all,
     shield_grid,
@@ -233,3 +238,32 @@ def test_duplicate_labels(tmp_path: Path) -> None:
     text = SMALL_CONFIG + '\n[[opponent]]\nspecies = "azumarill"\nfast = "BUBBLE"\ncharged = ["PLAY_ROUGH"]\n'
     with pytest.raises(MatchupConfigError, match="对手里有重名的 Azumarill"):
         prepare_matchups(load_matchup_config(_write(tmp_path, text)))
+
+
+# ---- 网页用的几个函数（4g） ----
+
+
+def test_parse_dict_same_as_file() -> None:
+    """读进来的 dict 和配置文件走同一套检查（网页发来的配置走 parse_matchup_config）。"""
+    raw = load_toml(EXAMPLE_CONFIG)
+    assert parse_matchup_config(raw, EXAMPLE_CONFIG.name) == load_matchup_config(EXAMPLE_CONFIG)
+    with pytest.raises(MatchupConfigError, match="^网页：配置要写成表（键值对），得到 list$"):
+        parse_matchup_config([1], "网页")
+    with pytest.raises(MatchupConfigError, match="^网页：缺少 subject$"):
+        parse_matchup_config({"league": 1500, "season": "pvpoke"}, "网页")
+
+
+def test_battle_names_and_outcome(tmp_path: Path) -> None:
+    matchups = prepare_matchups(load_matchup_config(_write(tmp_path, SMALL_CONFIG)))
+    subject, opponent = matchups.subjects[0], matchups.opponents[0]
+    assert battle_names(subject, opponent) == ("Froslass (Mega)", "Azumarill")
+    # 镜像对局：名字后面加上是哪一方
+    assert battle_names(subject, subject) == ("Froslass (Mega)（测试对象）", "Froslass (Mega)（对手）")
+
+    result = fight(matchups, make_sides(matchups, subject, opponent, 2, 2))
+    assert result.winner == 0 and result.ratings[0] == 578  # 同 test_report_for_small_config
+    hp = (result.snapshots[-1].sides[0].hp, result.snapshots[-1].sides[1].hp)
+    assert format_outcome(("A", "B"), result) == (
+        f"A 赢。评分 578 对 {result.ratings[1]}；剩余 HP {hp[0]} 对 {hp[1]}；"
+        f"{result.turns} 回合，对战时间 {result.elapsed_ms / 1000:g} 秒。"
+    )

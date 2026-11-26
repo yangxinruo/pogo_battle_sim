@@ -175,3 +175,27 @@ def test_export_and_import(base_url):
     assert status == 200 and imported == {"config": web_api.example_config(), "warnings": []}
     status, data = post_json(f"{base_url}/api/import-config", {"text": "league = ["})
     assert status == 400 and "不是合法的 TOML" in data["error"]
+
+
+def test_matchups(base_url):
+    """1v1 九宫格（4g）：选项、跑九宫格、看一场、导出再导入、写错回 400。"""
+    from tests.test_web_api import _small_matchups
+
+    status, _, body = request(f"{base_url}/api/matchup-options")
+    assert status == 200 and json.loads(body)["example"] == web_api.example_matchups()
+    raw = _small_matchups()
+    status, data = post_json(f"{base_url}/api/matchups", raw)
+    assert status == 200 and data["battles"] == 108
+    cell = data["pools"][1]["grids"][0][2]["ratings"][1][1]
+    battle = {"config": raw, "subject": 0, "pool": 1, "opponent": 2, "shields": [1, 1]}
+    status, data = post_json(f"{base_url}/api/matchup-battle", battle)
+    assert status == 200 and data["result"]["ratings"][0] == cell
+    status, exported = post_json(f"{base_url}/api/export-matchups", raw)
+    assert status == 200 and exported["filename"] == "1v1_Mega_Froslass_and_1_more.toml"
+    status, imported = post_json(f"{base_url}/api/import-matchups", {"text": exported["text"]})
+    assert status == 200 and imported == {"config": raw}
+    status, data = post_json(f"{base_url}/api/matchups", {**raw, "league": "1500"})
+    assert status == 400 and "league" in data["error"]
+    status, data = post_json(f"{base_url}/api/matchup-battle", {**battle, "shields": [3, 1]})
+    assert status == 400 and "shields" in data["error"]
+

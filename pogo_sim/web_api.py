@@ -12,9 +12,11 @@ tools/run_web.py 把这些函数转发成 HTTP 接口。
 - best_response(raw)：对另一队的固定策略，搜索一队的打法；改了哪些决定、每个决定点各选项的结果（4e）
 - library_payload()、save_library_team(raw)：队伍库（teams/，一队一个文件）：列出、存进去；不能删除（4f）
 - export_team_battle(raw)、import_team_battle(raw)：把页面上的配置导出成 3v3 配置文件（TOML），或者从这样的文件导入（4f）
+- matchup_options()、matchups(raw)、matchup_battle(raw)：1v1 九宫格和环境前 N（同命令行 tools.run_matchups），
+  以及其中一场的过程图和时间线；export_matchups(raw)、import_matchups(raw)：导出 / 导入九宫格的配置文件（4g）
 - stat_table_payload(league, season, custom_files)：能力值排序，每只的 CP、等级、IV、实际能力值、坦度（4d）
 
-网页发来的配置和 3v3 配置文件（team_battle.py 开头）写法一样、键也一样，只有一处不同：
+网页发来的配置和配置文件（3v3 见 team_battle.py 开头，九宫格见 matchups.py 开头）写法一样、键也一样，只有一处不同：
 覆盖文件只能从 data/custom/ 里选，写文件名（例如 "mega_froslass.toml"），不能写任意路径。
 写错时抛出 ConfigError，信息和配置文件写错时一样，开头是"网页"。
 """
@@ -25,12 +27,13 @@ import threading
 import time
 import tomllib
 import unicodedata
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, replace
+from dataclasses import asdict, fields, replace
 from functools import lru_cache
 from math import ceil
 from pathlib import Path
-from typing import Any, get_args, get_type_hints
+from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from pogo_sim.battle import Battle, BattleResult
 from pogo_sim.battle_summary import lane_items
@@ -51,6 +54,7 @@ from pogo_sim.config import (
     check_unknown_keys,
     error_message,
     load_toml,
+    marked,
     merge_tables,
     parse_entry,
     prepare_entry,
@@ -67,11 +71,40 @@ from pogo_sim.manual import (
     parse_decisions,
     play_manual,
 )
+from pogo_sim.matchups import (
+    SHIELD_COUNTS,
+    WIN_RATING,
+    Matchups,
+    PoolBuilder,
+    ShieldGrid,
+    battle_names,
+    fight,
+    format_csv,
+    format_report,
+    make_sides,
+    parse_matchup_config,
+    pool_summary,
+    prepare_matchups,
+    run_all,
+    run_pools,
+)
+from pogo_sim.matchups import format_outcome as format_1v1_outcome
 from pogo_sim.policy import ChargedAction, FastAction, SwitchAction
 from pogo_sim.rules import BattleRules
-from pogo_sim.rankings import RankedPokemon, load_rankings
+from pogo_sim.rankings import (
+    IV_RULES,
+    POOL_KINDS,
+    RANKING_CUPS,
+    Pool,
+    PoolSpec,
+    RankedPokemon,
+    load_rankings,
+    prepare_pool,
+    rankings_path,
+)
 from pogo_sim.rules import PVPOKE_COMPAT
-from pogo_sim.season import LEAGUE_NAMES, SEASON_PRESETS, league_name
+from pogo_sim.season import LEAGUE_NAMES, SEASON_PRESETS, SeasonRules, league_name
+from pogo_sim.simple_policy import SimplePolicyConfig
 from pogo_sim.stat_table import CACHE_DIR as STAT_CACHE_DIR
 from pogo_sim.stat_table import stat_table
 from pogo_sim.team_battle import (
@@ -490,23 +523,28 @@ def battle_payload(battle: TeamBattle, result: BattleResult, report_markdown: st
             for team in battle.teams
         ],
         "outcome": format_outcome(battle, result),
-        "result": {
-            "winner": result.winner,
-            "ratings": list(result.ratings),
-            "turns": result.turns,
-            "elapsed_ms": result.elapsed_ms,
-            "timed_out": result.timed_out,
-            "remaining": list(result.remaining),
-            "shields_left": list(result.shields_left),
-        },
+        "result": result_payload(result),
         "members": [asdict(s) for s in member_summaries(battle, result)],
         "opening": [{"side": o.side, "ratings": o.ratings} for o in opening_matchups(battle)],
         "switches": [asdict(r) | {"kind_text": SWITCH_KINDS[r.kind]} for r in switch_records(result)],
         "charged": [asdict(r) for r in charged_records(result)],
         "segments": segments_payload(battle, result),
-        "chart": chart_payload(battle, result),
+        "chart": chart_payload(battle.gm, max_hps(battle), result),
         "timeline": timeline_payload(result, names),
         "report_markdown": report_markdown if report_markdown is not None else format_team_battle_report(battle, result),
+    }
+
+
+def result_payload(result: BattleResult) -> dict[str, Any]:
+    """结果的数字（3v3 和 1v1 都用）。"""
+    return {
+        "winner": result.winner,
+        "ratings": list(result.ratings),
+        "turns": result.turns,
+        "elapsed_ms": result.elapsed_ms,
+        "timed_out": result.timed_out,
+        "remaining": list(result.remaining),
+        "shields_left": list(result.shields_left),
     }
 
 
@@ -522,22 +560,22 @@ def segments_payload(battle: TeamBattle, result: BattleResult) -> list[dict[str,
     ]
 
 
-def chart_payload(battle: TeamBattle, result: BattleResult) -> dict[str, Any]:
-    """过程图的数据。逐回合的数组都从第 0 回合（开打之前）开始，下标就是回合数：
+def chart_payload(gm: GameMaster, hps: Sequence[Sequence[int]], result: BattleResult) -> dict[str, Any]:
+    """过程图的数据（3v3 和 1v1 都用）。hps[方][第几只] 是最大 HP。逐回合的数组都从第 0 回合（开打之前）开始，
+    下标就是回合数：
 
     - elapsed_ms[t]：第 t 回合结束时的对战时间
     - sides[方]：active[t] 是第 t 回合在场的第几只（第 0 回合是首发）；hp[第几只][t]、energy[第几只][t]
       是第 t 回合结束时的 HP 和能量；max_hp；lane 是招式带（battle_summary.LaneItem）
     - move_names：图上用到的招式的名字
     """
-    lanes = lane_items(result, battle.gm)
-    hps = max_hps(battle)
+    lanes = lane_items(result, gm)
     snapshots = result.snapshots
     if [s.turn for s in snapshots] != list(range(1, result.turns + 1)):
         raise ValueError("快照要每回合一个")  # 引擎每回合都记，不应该发生
     sides = []
-    for side, team in enumerate(battle.teams):
-        size = len(team.members)
+    for side in (0, 1):
+        size = len(hps[side])
         sides.append({
             "active": [0] + [s.sides[side].active for s in snapshots],
             "max_hp": list(hps[side]),
@@ -545,12 +583,12 @@ def chart_payload(battle: TeamBattle, result: BattleResult) -> dict[str, Any]:
             "energy": [[0] + [s.sides[side].member_energy[slot] for s in snapshots] for slot in range(size)],
             "lane": [asdict(item) for item in lanes[side]],
         })
-    used = {item.move_id for lane in lanes for item in lane if item.move_id in battle.gm.moves}
+    used = {item.move_id for lane in lanes for item in lane if item.move_id in gm.moves}
     return {
         "turns": result.turns,
         "elapsed_ms": [0] + [s.elapsed_ms for s in snapshots],
         "sides": sides,
-        "move_names": {move_id: battle.gm.get_move(move_id).name for move_id in sorted(used)},
+        "move_names": {move_id: gm.get_move(move_id).name for move_id in sorted(used)},
     }
 
 
@@ -785,19 +823,10 @@ def export_team_battle(raw: Any) -> dict[str, Any]:
     返回 {"filename": 建议的文件名, "text": 文件内容}。
     """
     prepared_battle(raw)  # 检查（同打一场；建好的两队缓存起来，接着打一场时不用再建）
-    data = _with_custom_paths(raw)
-    if not data["custom_files"]:
-        del data["custom_files"]
-    ordered = {key: data[key] for key in ("custom_files", "league", "season") if key in data}
-    ordered |= {key: value for key, value in data.items() if key not in ordered}
     names = [team["name"] for team in raw["team"]]
     filename = "3v3_" + "_vs_".join(team_library.file_name(name).removesuffix(".toml") for name in names) + ".toml"
-    header = [
-        "网页导出的 3v3 配置（格式见 pogo_sim/team_battle.py 开头）。运行：",
-        f"  .venv/bin/python -m tools.run_team_battle {filename}",
-        "不写 IV 和等级的，按赛季规则取 IV 排名第 1 和合法的最高等级。",
-    ]
-    return {"filename": filename, "text": toml_dumps(ordered, header)}
+    header = export_header(" 3v3 ", "team_battle.py", "run_team_battle", filename)
+    return {"filename": filename, "text": toml_dumps(ordered_config(raw, ("custom_files", "league", "season")), header)}
 
 
 def import_team_battle(raw: Any) -> dict[str, Any]:
@@ -808,25 +837,9 @@ def import_team_battle(raw: Any) -> dict[str, Any]:
     盾数和 switching 以外的策略参数）不导入，写在 warnings 里。
     返回 {"config": 网页的配置（同 example_config 的写法）, "warnings": [...]}。
     """
-    if not isinstance(raw, dict):
-        raise ConfigError(f"{WHERE}：要写成表（键值对），得到 {type(raw).__name__}")
-    check_unknown_keys(raw, {"text", "name"}, WHERE)
-    text, name = raw.get("text"), raw.get("name", "")
-    if not isinstance(text, str) or not isinstance(name, str):
-        raise ConfigError(f"{WHERE}：text 和 name 要写字符串")
-    where = f"导入的文件{name and f' {name}'}"
-    try:
-        data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as e:
-        raise ConfigError(f"{where}：不是合法的 TOML（{e}）") from e
+    data, where = read_imported_file(raw)
     parse_team_battle_config(data, where)
-
-    names = []
-    for path in data.get("custom_files", []):
-        file = path.removeprefix("data/custom/")
-        if "/" in file or file not in available_custom_files():
-            raise ConfigError(f"{where}：网页只能用 data/custom/ 里的覆盖文件，{path!r} 不在那里")
-        names.append(file)
+    names = imported_custom_names(data, where)
 
     shared_policy = data.get("policy", {})
     warnings = []
@@ -845,6 +858,50 @@ def import_team_battle(raw: Any) -> dict[str, Any]:
     return {"config": config, "warnings": warnings}
 
 
+def read_imported_file(raw: Any) -> tuple[dict[str, Any], str]:
+    """导入的配置文件：raw = {"text": 文件内容, "name": 文件名（可选）}。返回读出来的表和报错信息的开头。"""
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{WHERE}：要写成表（键值对），得到 {type(raw).__name__}")
+    check_unknown_keys(raw, {"text", "name"}, WHERE)
+    text, name = raw.get("text"), raw.get("name", "")
+    if not isinstance(text, str) or not isinstance(name, str):
+        raise ConfigError(f"{WHERE}：text 和 name 要写字符串")
+    where = f"导入的文件{name and f' {name}'}"
+    try:
+        return tomllib.loads(text), where
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{where}：不是合法的 TOML（{e}）") from e
+
+
+def imported_custom_names(data: dict[str, Any], where: str) -> list[str]:
+    """导入的文件里的覆盖文件（路径）→ 网页用的文件名。网页只能用 data/custom/ 里的。"""
+    names = []
+    for path in data.get("custom_files", []):
+        file = path.removeprefix("data/custom/")
+        if "/" in file or file not in available_custom_files():
+            raise ConfigError(f"{where}：网页只能用 data/custom/ 里的覆盖文件，{path!r} 不在那里")
+        names.append(file)
+    return names
+
+
+def export_header(kind: str, module: str, tool: str, filename: str) -> list[str]:
+    """导出的配置文件开头的注释：是什么、格式在哪里、怎么运行。"""
+    return [
+        f"网页导出的{kind}配置（格式见 pogo_sim/{module} 开头）。运行：",
+        f"  .venv/bin/python -m tools.{tool} {filename}",
+        "不写 IV 和等级的，按赛季规则取 IV 排名第 1 和合法的最高等级。",
+    ]
+
+
+def ordered_config(raw: Any, first: Sequence[str]) -> dict[str, Any]:
+    """网页的配置写成配置文件的样子：覆盖文件换成 data/custom/ 下的路径（没有时不写），first 里的键排在前面。"""
+    data = _with_custom_paths(raw)
+    if not data["custom_files"]:
+        del data["custom_files"]
+    ordered = {key: data[key] for key in first if key in data}
+    return ordered | {key: value for key, value in data.items() if key not in ordered}
+
+
 # ---- 手动对战（4c） ----
 
 
@@ -856,15 +913,19 @@ def _prepare_from_key(key: str) -> TeamBattle:
 def prepared_battle(raw: Any) -> TeamBattle:
     """检查配置并按赛季规则建好两队。手动对战每做一个决定都要重打，同一个配置只建一次（建配置比打一场慢得多）。
 
-    缓存的键是配置本身和选中的覆盖文件的修改时间，所以改了覆盖文件会重新建。
+    缓存的键是配置本身和选中的覆盖文件的修改时间（config_key），所以改了覆盖文件会重新建。
     """
+    return _prepare_from_key(config_key(raw))
+
+
+def config_key(raw: Any) -> str:
+    """缓存建好的配置用的键：网页的配置（覆盖文件换成路径）和选中的覆盖文件的修改时间，写成 JSON。"""
     converted = _with_custom_paths(raw)
     mtimes = [(REPO_ROOT / path).stat().st_mtime_ns for path in converted["custom_files"]]
     try:
-        key = json.dumps({"config": converted, "mtimes": mtimes}, sort_keys=True, ensure_ascii=False)
+        return json.dumps({"config": converted, "mtimes": mtimes}, sort_keys=True, ensure_ascii=False)
     except (TypeError, ValueError) as e:
         raise ConfigError(f"{WHERE}：配置里有不能转成 JSON 的值（{e}）") from e
-    return _prepare_from_key(key)
 
 
 def manual_battle(raw: Any) -> dict[str, Any]:
@@ -1042,3 +1103,282 @@ def manual_question_payload(team_battle: TeamBattle, game: ManualGame, side: int
             if not isinstance(e, DecisionEvent)
         ],
     }
+
+
+# ---- 1v1 九宫格和环境前 N（4g） ----
+#
+# 和命令行 tools.run_matchups 是同一套配置（matchups.py 开头）和计算：每个测试对象对每个手写的对手、
+# 每组环境前 N 里的每一只，0–2 盾对 0–2 盾各打一场，双方都用简单规则策略（SimplePolicy，参数双方相同）。
+
+MATCHUP_EXAMPLE = REPO_ROOT / "experiments" / "gl_mega_froslass_top.toml"
+
+# SimplePolicyConfig 的参数在网页上怎么说（参数的意思见 simple_policy.py）
+SIMPLE_POLICY_NAMES = {
+    "charged_move_choice": "平时攒能量放哪个大招",
+    "optimize_timing": "放大招前等对手的快招结束",
+    "bait_shields": "骗盾：对手有盾时先放便宜的招",
+    "shielding": "开盾",
+    "shield_hp_fraction": "开盾的 HP 线",
+}
+SIMPLE_POLICY_CHOICES = {
+    "charged_move_choice": {
+        "best_dpe": "每点能量伤害最高的",
+        "most_damage": "单发伤害最高的",
+        "cheapest": "最便宜的（能放就放）",
+    },
+    "shielding": {
+        "always": "有盾就开",
+        "never": "从不开",
+        "when_low": "挨这一下后剩余 HP 低于 HP 线才开（会被打倒时一定开）",
+    },
+}
+
+
+def matchup_options() -> dict[str, Any]:
+    """九宫格页的选项（联盟、赛季规则、覆盖文件用 options() 里的）：
+
+    - policy：SimplePolicyConfig 的每个参数：key、name、default，type 是 "choice"（带 choices）/ "bool" / "number"
+    - pool：环境前 N 能选的 rankings、kinds、ivs（取值和说明）；available[联盟] 是这个联盟有排名文件的 rankings
+    - shield_counts、win_rating：九宫格的盾数，评分大于 win_rating 算赢
+    - example：第一次打开时用的例子配置（experiments/gl_mega_froslass_top.toml，网页的格式）
+    """
+    hints = get_type_hints(SimplePolicyConfig)
+    policy = []
+    for field in fields(SimplePolicyConfig):
+        hint = hints[field.name]
+        item: dict[str, Any] = {
+            "key": field.name,
+            "name": SIMPLE_POLICY_NAMES.get(field.name, field.name),
+            "default": field.default,
+        }
+        if get_origin(hint) is Literal:
+            names = SIMPLE_POLICY_CHOICES.get(field.name, {})
+            item |= {"type": "choice", "choices": [{"key": k, "name": names.get(k, k)} for k in get_args(hint)]}
+        elif hint is bool:
+            item["type"] = "bool"
+        else:
+            item["type"] = "number"
+        policy.append(item)
+    describe = lambda options: [{"key": key, "name": name} for key, name in options.items()]  # noqa: E731
+    return {
+        "policy": policy,
+        "pool": {
+            "rankings": describe(RANKING_CUPS),
+            "kinds": describe(POOL_KINDS),
+            "ivs": describe(IV_RULES),
+            "available": {cp: [cup for cup in RANKING_CUPS if rankings_path(cup, cp).exists()] for cp in LEAGUE_NAMES},
+        },
+        "shield_counts": list(SHIELD_COUNTS),
+        "win_rating": WIN_RATING,
+        "example": example_matchups(),
+    }
+
+
+def example_matchups() -> dict[str, Any]:
+    """九宫格的例子配置，写成网页的格式（覆盖文件写文件名）。"""
+    raw = load_toml(MATCHUP_EXAMPLE)
+    raw["custom_files"] = [path.rsplit("/", 1)[-1] for path in raw.get("custom_files", [])]
+    return raw
+
+
+# 建好的环境前 N（rankings.prepare_pool：每只算 IV 排名，前 50 只约 1 秒）。改测试对象、手写的对手时不用重建。
+_POOL_CACHE: OrderedDict[tuple[Any, ...], Pool] = OrderedDict()
+_POOL_CACHE_SIZE = 32
+_POOL_LOCK = threading.Lock()
+
+
+def cached_pool_builder(custom_key: tuple[tuple[str, int], ...]) -> PoolBuilder:
+    """带缓存的 rankings.prepare_pool（给 prepare_matchups 用）。
+
+    缓存的键：覆盖文件（路径和修改时间，custom_key）、这一组的设置（名字除外）、联盟、赛季规则。
+    只改了这一组的名字时直接用建好的，换上新名字。
+    """
+
+    def build(gm: GameMaster, spec: PoolSpec, league: int, season: SeasonRules) -> Pool:
+        key = (custom_key, replace(spec, name=""), league, season)
+        with _POOL_LOCK:
+            pool = _POOL_CACHE.get(key)
+            if pool is not None:
+                _POOL_CACHE.move_to_end(key)
+                return replace(pool, spec=spec)
+        pool = prepare_pool(gm, spec, league, season)
+        with _POOL_LOCK:
+            _POOL_CACHE[key] = pool
+            while len(_POOL_CACHE) > _POOL_CACHE_SIZE:
+                _POOL_CACHE.popitem(last=False)
+        return pool
+
+    return build
+
+
+@lru_cache(maxsize=8)
+def _matchups_from_key(key: str) -> Matchups:
+    data = json.loads(key)
+    config = parse_matchup_config(data["config"], WHERE)
+    custom_key = tuple(zip(data["config"]["custom_files"], data["mtimes"]))
+    return prepare_matchups(config, cached_pool_builder(custom_key))
+
+
+def prepared_matchups(raw: Any) -> Matchups:
+    """检查九宫格的配置并按赛季规则建好双方（同命令行）。同一个配置只建一次：点一格看一场时不用重建。"""
+    return _matchups_from_key(config_key(raw))
+
+
+def _grid_payload(grid: ShieldGrid) -> dict[str, Any]:
+    """一个九宫格：ratings[自己的盾数][对手的盾数]（从测试对象一方看的评分），九格里赢了几格，平均评分。"""
+    return {"ratings": [list(row) for row in grid.ratings], "wins": grid.wins, "average": grid.average}
+
+
+def _participant_payload(gm: GameMaster, participant: Participant) -> dict[str, Any]:
+    """一只的配置（_member_info），marked 是报告里的名字（带了招式池外的招时后面加 *）。"""
+    return _member_info(gm, participant) | {"marked": marked(participant)}
+
+
+def matchups(raw: Any) -> dict[str, Any]:
+    """跑九宫格（同命令行 tools.run_matchups）。raw 和九宫格的配置文件写法相同（覆盖文件写文件名）。
+
+    - settings：联盟、赛季规则、策略参数、覆盖文件的记录
+    - subjects、opponents：测试对象和手写的对手（_participant_payload）
+    - grids[第几个测试对象][第几个手写的对手]：九宫格（_grid_payload）
+    - pools：每组环境前 N：name、description（来源）、skipped（前 N 只里建不了配置、跳过的，和原因）、
+      members（名次 rank、PvPoke 综合分 score，加上这一只的配置）、grids[第几个测试对象][第几个对手]、
+      summary[第几个测试对象]（matchups.pool_summary：同样盾数时赢了几只、九格一共赢了几格、平均评分）
+    - battles、seconds：一共打了几场、花了几秒（含建配置；环境前 N 第一次要建，之后用缓存）
+    - report_markdown、csv：和命令行的报告、--csv 完全相同
+    """
+    start = time.perf_counter()
+    prepared = prepared_matchups(raw)
+    grids = run_all(prepared)
+    pool_grids = run_pools(prepared)
+    seconds = time.perf_counter() - start
+
+    gm = prepared.gm
+    config = prepared.config
+    n_opponents = len(prepared.opponents)
+    battles = len(SHIELD_COUNTS) ** 2 * len(prepared.subjects) * (
+        n_opponents + sum(len(pool.members) for pool in prepared.pools)
+    )
+    return {
+        "settings": {
+            "league": config.league,
+            "league_name": league_name(config.league),
+            "season": config.season.name,
+            "policy": asdict(config.policy),
+            "custom_log": list(gm.custom_log),
+        },
+        "subjects": [_participant_payload(gm, p) for p in prepared.subjects],
+        "opponents": [_participant_payload(gm, p) for p in prepared.opponents],
+        "grids": [
+            [_grid_payload(grid) for grid in grids[i * n_opponents:(i + 1) * n_opponents]]
+            for i in range(len(prepared.subjects))
+        ],
+        "pools": [
+            {
+                "name": pg.pool.spec.name,
+                "description": pg.pool.spec.describe(pg.pool.league),
+                "skipped": [
+                    {"rank": s.ranked.rank, "species": s.ranked.species_id, "name": gm.get_species(s.ranked.species_id).name,
+                     "reason": s.reason}
+                    for s in pg.pool.skipped
+                ],
+                "members": [
+                    {"rank": m.ranked.rank, "score": m.ranked.score} | _participant_payload(gm, m.participant)
+                    for m in pg.pool.members
+                ],
+                "grids": [[_grid_payload(grid) for grid in subject_grids] for subject_grids in pg.by_subject],
+                "summary": [asdict(pool_summary(subject_grids)) for subject_grids in pg.by_subject],
+            }
+            for pg in pool_grids
+        ],
+        "battles": battles,
+        "seconds": round(seconds, 2),
+        "report_markdown": format_report(prepared, grids, pool_grids=pool_grids),
+        "csv": format_csv(prepared, grids, pool_grids),
+    }
+
+
+def _index(raw: dict[str, Any], key: str, size: int, what: str) -> int:
+    value = raw.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value < size:
+        raise ConfigError(f"{WHERE}：{key} 要写第几个{what}（0 到 {size - 1}），得到 {value!r}")
+    return value
+
+
+def matchup_battle(raw: Any) -> dict[str, Any]:
+    """九宫格里的一场（网页上点一格）：过程图和逐回合时间线。
+
+    raw：{"config": 九宫格的配置（同 matchups）, "subject": 第几个测试对象, "pool": 第几组环境前 N（手写的对手写 null）,
+    "opponent": 第几个对手, "shields": [测试对象的盾数, 对手的盾数]}。都从 0 数起。
+    返回和打一场的结果（battle_payload）同样结构的一部分，网页用同一套画法（web/battle_view.js）：
+    settings、teams（每方一只，队名就是这一只的名字）、outcome、result、chart、timeline。
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{WHERE}：要写成表（键值对），得到 {type(raw).__name__}")
+    check_unknown_keys(raw, {"config", "subject", "pool", "opponent", "shields"}, WHERE)
+    if "config" not in raw:
+        raise ConfigError(f"{WHERE}：缺少 config")
+    prepared = prepared_matchups(raw["config"])
+    subject = prepared.subjects[_index(raw, "subject", len(prepared.subjects), "测试对象")]
+    if raw.get("pool") is None:
+        if not prepared.opponents:
+            raise ConfigError(f"{WHERE}：没有手写的对手（pool 要写第几组环境前 N）")
+        group = prepared.opponents
+    else:
+        group = prepared.pools[_index(raw, "pool", len(prepared.pools), "环境前 N")].participants
+    opponent = group[_index(raw, "opponent", len(group), "对手")]
+    shields = raw.get("shields")
+    if not (
+        isinstance(shields, list)
+        and len(shields) == 2
+        and all(isinstance(s, int) and not isinstance(s, bool) and s in SHIELD_COUNTS for s in shields)
+    ):
+        raise ConfigError(f"{WHERE}：shields 要写 [测试对象的盾数, 对手的盾数]，每个是 0、1 或 2，得到 {shields!r}")
+
+    sides = make_sides(prepared, subject, opponent, shields[0], shields[1])
+    hps = ((sides[0].active_member.stats.hp,), (sides[1].active_member.stats.hp,))
+    result = fight(prepared, sides)
+    names = battle_names(subject, opponent)
+    gm = prepared.gm
+    config = prepared.config
+    return {
+        "settings": {
+            "league": config.league,
+            "league_name": league_name(config.league),
+            "season": config.season.name,
+            "custom_log": list(gm.custom_log),
+        },
+        "teams": [
+            {"name": names[side], "shields": shields[side], "names": [names[side]], "members": [_member_info(gm, p)]}
+            for side, p in enumerate((subject, opponent))
+        ],
+        "outcome": format_1v1_outcome(names, result),
+        "result": result_payload(result),
+        "chart": chart_payload(gm, hps, result),
+        "timeline": timeline_payload(result, ((names[0],), (names[1],))),
+    }
+
+
+def export_matchups(raw: Any) -> dict[str, Any]:
+    """把页面上的九宫格配置写成配置文件（TOML），命令行 tools.run_matchups 能直接跑。
+
+    先和跑九宫格一样检查、建一遍（建好的缓存起来），所以导出的文件一定能跑。返回 {"filename", "text"}。
+    """
+    prepared = prepared_matchups(raw)
+    labels = [p.label for p in prepared.subjects]
+    stem = team_library.file_name(labels[0]).removesuffix(".toml")
+    filename = f"1v1_{stem}{f'_and_{len(labels) - 1}_more' if len(labels) > 1 else ''}.toml"
+    data = ordered_config(raw, ("description", "custom_files", "league", "season", "policy"))
+    if not data.get("policy"):
+        data.pop("policy", None)
+    header = export_header(" 1v1 九宫格", "matchups.py", "run_matchups", filename)
+    return {"filename": filename, "text": toml_dumps(data, header)}
+
+
+def import_matchups(raw: Any) -> dict[str, Any]:
+    """从九宫格的配置文件（TOML 文本）导入：检查和命令行读配置文件完全相同，覆盖文件只能是 data/custom/ 里的。
+
+    raw：{"text": 文件内容, "name": 文件名（可选）}。返回 {"config": 网页的配置（同 example_matchups 的写法）}。
+    """
+    data, where = read_imported_file(raw)
+    parse_matchup_config(data, where)
+    return {"config": data | {"custom_files": imported_custom_names(data, where)}}

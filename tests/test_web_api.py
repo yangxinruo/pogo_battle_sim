@@ -7,7 +7,8 @@
 import copy
 import json
 import re
-from dataclasses import asdict
+import tomllib
+from dataclasses import asdict, fields
 
 import pytest
 
@@ -18,7 +19,21 @@ from pogo_sim.config import REPO_ROOT, ConfigError, load_toml, parse_entry, prep
 from pogo_sim.damage import calculate_damage
 from pogo_sim.gamemaster import load_gamemaster
 from pogo_sim.manual import parse_decisions, play_manual
+from pogo_sim.matchups import (
+    battle_names,
+    fight,
+    format_csv,
+    format_report,
+    load_matchup_config,
+    make_sides,
+    parse_matchup_config,
+    pool_summary,
+    prepare_matchups,
+    run_all,
+    run_pools,
+)
 from pogo_sim.season import PVPOKE_SEASON, SEASON_PRESETS
+from pogo_sim.simple_policy import SimplePolicyConfig
 from pogo_sim.team_battle import (
     SWITCH_KINDS,
     format_team_battle_report,
@@ -34,6 +49,7 @@ from pogo_sim.team_battle import (
 )
 from pogo_sim.timeline import MoveEvent, SwitchEvent, describe_event, event_actor, format_event
 from tests.test_manual import _auto_choices
+from tests.test_matchup_pools import EXPLICIT_OPPONENT, POOL_CONFIG
 
 EXAMPLE = REPO_ROOT / "experiments" / "gl_3v3_example.toml"
 
@@ -808,3 +824,260 @@ def test_import_warns_about_settings_the_page_cannot_show():
 def test_import_errors(text, message):
     with pytest.raises(ConfigError, match=re.escape(message)):
         web_api.import_team_battle({"text": text, "name": "x.toml"})
+
+
+# ---- 1v1 九宫格和环境前 N（4g） ----
+
+MATCHUP_EXAMPLE = REPO_ROOT / "experiments" / "gl_mega_froslass_top.toml"
+
+
+def _small_matchups() -> dict:
+    """小配置（网页的格式）：两个测试对象，一个手写的对手，Mega 前 2、非 Mega 前 3（同 tests/test_matchup_pools.py）。"""
+    raw = tomllib.loads(POOL_CONFIG + EXPLICIT_OPPONENT)
+    raw["custom_files"] = ["mega_froslass.toml"]
+    return raw
+
+
+@pytest.fixture(scope="module")
+def cli_matchups(tmp_path_factory):
+    """同一个配置写成文件、用命令行的读法跑一遍（对照用）。"""
+    path = tmp_path_factory.mktemp("matchups") / "small.toml"
+    path.write_text(POOL_CONFIG + EXPLICIT_OPPONENT, encoding="utf-8")
+    prepared = prepare_matchups(load_matchup_config(path))
+    return prepared, run_all(prepared), run_pools(prepared)
+
+
+@pytest.fixture(scope="module")
+def matchup_payload():
+    """网页跑的同一个配置，转成 JSON 再读回来。"""
+    return json.loads(json.dumps(web_api.matchups(_small_matchups())))
+
+
+def test_matchup_options():
+    options = web_api.matchup_options()
+    assert [(p["key"], p["default"]) for p in options["policy"]] == [
+        (f.name, f.default) for f in fields(SimplePolicyConfig)
+    ]
+    types = {p["key"]: p["type"] for p in options["policy"]}
+    assert types == {
+        "charged_move_choice": "choice", "optimize_timing": "bool", "bait_shields": "bool",
+        "shielding": "choice", "shield_hp_fraction": "number",
+    }
+    shielding = next(p for p in options["policy"] if p["key"] == "shielding")
+    assert [c["key"] for c in shielding["choices"]] == ["always", "never", "when_low"]
+    assert options["pool"]["available"] == {500: [], 1500: ["all", "mega"], 2500: ["all", "mega"], 10000: ["all", "mega"]}
+    assert [k["key"] for k in options["pool"]["kinds"]] == ["mega", "non_mega"]
+    assert options["shield_counts"] == [0, 1, 2] and options["win_rating"] == 500
+    # 例子配置：网页的格式（覆盖文件写文件名），检查以后和配置文件完全相同
+    example = options["example"]
+    assert example["custom_files"] == ["mega_froslass.toml"]
+    assert parse_matchup_config(web_api._with_custom_paths(example), "网页") == load_matchup_config(MATCHUP_EXAMPLE)
+
+
+def test_matchups_same_as_command_line(matchup_payload, cli_matchups):
+    """网页跑出来的九宫格、报告、CSV 和命令行完全相同。"""
+    prepared, grids, pool_grids = cli_matchups
+    data = matchup_payload
+    assert data["report_markdown"] == format_report(prepared, grids, pool_grids=pool_grids)
+    assert data["csv"] == format_csv(prepared, grids, pool_grids)
+    assert data["battles"] == 9 * 2 * (1 + 2 + 3)
+    # 手写的对手：grids[测试对象][对手]
+    assert [[cell["ratings"] for cell in row] for row in data["grids"]] == [
+        [[list(r) for r in g.ratings]] for g in grids
+    ]
+    assert data["grids"][0][0]["wins"] == grids[0].wins
+    assert data["grids"][0][0]["average"] == pytest.approx(grids[0].average)
+    for pool, pg in zip(data["pools"], pool_grids):
+        assert pool["name"] == pg.pool.spec.name
+        assert pool["description"] == pg.pool.spec.describe(1500)
+        assert [m["rank"] for m in pool["members"]] == [m.ranked.rank for m in pg.pool.members]
+        assert [m["label"] for m in pool["members"]] == [p.label for p in pg.pool.participants]
+        for subject_cells, subject_grids, summary in zip(pool["grids"], pg.by_subject, pool["summary"]):
+            assert [cell["ratings"] for cell in subject_cells] == [[list(r) for r in g.ratings] for g in subject_grids]
+            assert summary == json.loads(json.dumps(asdict(pool_summary(subject_grids))))
+
+
+def test_matchups_participants(matchup_payload, cli_matchups):
+    prepared, _, _ = cli_matchups
+    subjects = matchup_payload["subjects"]
+    assert [s["marked"] for s in subjects] == ["Mega Froslass", "Froslass"]
+    expected = web_api._member_info(prepared.gm, prepared.subjects[0])
+    assert subjects[0] == json.loads(json.dumps(expected | {"marked": "Mega Froslass"}))
+    assert [o["label"] for o in matchup_payload["opponents"]] == ["Azumarill"]
+    assert matchup_payload["settings"]["policy"] == asdict(SimplePolicyConfig())
+    assert matchup_payload["pools"][0]["members"][0]["score"] > 0
+
+
+def test_pools_are_cached(monkeypatch):
+    """建好的环境前 N 缓存起来：改测试对象、改这一组的名字都不用重建；改了这一组的设置才重建。"""
+    built = []
+    original = web_api.prepare_pool
+
+    def counting(gm, spec, league, season):
+        built.append(spec.top)
+        return original(gm, spec, league, season)
+
+    monkeypatch.setattr(web_api, "prepare_pool", counting)
+    monkeypatch.setattr(web_api, "_POOL_CACHE", web_api.OrderedDict())
+    web_api._matchups_from_key.cache_clear()
+
+    raw = _small_matchups()
+    web_api.matchups(raw)
+    assert built == [2, 3]
+    raw["subject"] = raw["subject"][:1]
+    web_api.matchups(raw)
+    raw["opponent_pool"][0]["name"] = "新名字"
+    data = web_api.matchups(raw)
+    assert built == [2, 3]
+    assert data["pools"][0]["name"] == "新名字" and "## 环境前 N：新名字" in data["report_markdown"]
+    raw["opponent_pool"][1]["top"] = 4
+    web_api.matchups(raw)
+    assert built == [2, 3, 4]
+    web_api._matchups_from_key.cache_clear()
+
+
+def test_prepared_matchups_is_cached():
+    a = web_api.prepared_matchups(_small_matchups())
+    assert web_api.prepared_matchups(_small_matchups()) is a
+    other = _small_matchups()
+    other["subject"][0]["ivs"] = [0, 15, 15]
+    assert web_api.prepared_matchups(other) is not a
+
+
+def _battle(pool, opponent, shields, subject=0, raw=None):
+    request = {"config": raw or _small_matchups(), "subject": subject, "pool": pool, "opponent": opponent, "shields": shields}
+    return json.loads(json.dumps(web_api.matchup_battle(request)))
+
+
+@pytest.mark.parametrize(("pool", "opponent", "shields"), [(None, 0, [2, 2]), (0, 1, [1, 0]), (1, 2, [0, 2])])
+def test_matchup_battle_is_that_cell(matchup_payload, cli_matchups, pool, opponent, shields):
+    """点一格看的一场：评分就是那一格；过程图、时间线和直接打这一场相同。"""
+    prepared, _, _ = cli_matchups
+    data = _battle(pool, opponent, shields)
+    cells = matchup_payload["grids"] if pool is None else matchup_payload["pools"][pool]["grids"]
+    assert data["result"]["ratings"][0] == cells[0][opponent]["ratings"][shields[0]][shields[1]]
+
+    group = prepared.opponents if pool is None else prepared.pools[pool].participants
+    subject, other = prepared.subjects[0], group[opponent]
+    sides = make_sides(prepared, subject, other, *shields)
+    hps = ((sides[0].active_member.stats.hp,), (sides[1].active_member.stats.hp,))
+    result = fight(prepared, sides)
+    names = battle_names(subject, other)
+    assert data["result"] == json.loads(json.dumps(web_api.result_payload(result)))
+    assert data["chart"] == json.loads(json.dumps(web_api.chart_payload(prepared.gm, hps, result)))
+    assert data["timeline"] == json.loads(json.dumps(web_api.timeline_payload(result, ((names[0],), (names[1],)))))
+    assert [t["name"] for t in data["teams"]] == list(names)
+    assert [t["shields"] for t in data["teams"]] == shields
+    assert data["teams"][1]["members"][0]["label"] == other.label
+    assert data["outcome"].startswith(("Mega Froslass 赢", f"{other.label} 赢", "平局"))
+
+
+def test_matchup_battle_mirror_names():
+    raw = _small_matchups()
+    raw["opponent"][0] = {"species": "froslass", "fast": "POWDER_SNOW", "charged": ["AVALANCHE", "SHADOW_BALL"]}
+    data = _battle(None, 0, [1, 1], subject=1, raw=raw)
+    assert [t["name"] for t in data["teams"]] == ["Froslass（测试对象）", "Froslass（对手）"]
+    assert data["chart"]["sides"][0]["max_hp"] == data["chart"]["sides"][1]["max_hp"]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"subject": 2}, "subject 要写第几个测试对象（0 到 1），得到 2"),
+        ({"subject": True}, "subject 要写第几个测试对象"),
+        ({"pool": 2}, "pool 要写第几个环境前 N（0 到 1），得到 2"),
+        ({"opponent": 1}, "opponent 要写第几个对手（0 到 0），得到 1"),
+        ({"pool": 1, "opponent": -1}, "opponent 要写第几个对手（0 到 2）"),
+        ({"shields": [3, 0]}, "shields 要写 [测试对象的盾数, 对手的盾数]"),
+        ({"shields": [True, 0]}, "shields 要写"),
+        ({"shields": [1.0, 0]}, "shields 要写"),
+        ({"shields": 1}, "shields 要写"),
+        ({"extra": 1}, "不认识的字段 extra"),
+    ],
+)
+def test_matchup_battle_errors(change, message):
+    request = {"config": _small_matchups(), "subject": 0, "pool": None, "opponent": 0, "shields": [1, 1]} | change
+    with pytest.raises(ConfigError, match=re.escape(message)):
+        web_api.matchup_battle(request)
+
+
+def test_matchup_battle_without_handwritten_opponents():
+    raw = _small_matchups()
+    del raw["opponent"]
+    with pytest.raises(ConfigError, match="没有手写的对手"):
+        web_api.matchup_battle({"config": raw, "subject": 0, "pool": None, "opponent": 0, "shields": [1, 1]})
+    with pytest.raises(ConfigError, match="缺少 config"):
+        web_api.matchup_battle({"subject": 0})
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda raw: raw.pop("subject"), "^网页：缺少 subject$"),
+        (lambda raw: raw.update(custom_files=["../x.toml"]), "data/custom/ 里没有覆盖文件"),
+        (lambda raw: raw["subject"][0].update(species="nope"), "测试对象第 1 项（Mega Froslass）"),
+        (lambda raw: raw.update(policy={"shielding": "sometimes"}), "shielding"),
+        (lambda raw: raw.update(league=500), "环境前 N（Mega 前 2）"),
+    ],
+)
+def test_matchups_errors(change, message):
+    raw = _small_matchups()
+    change(raw)
+    with pytest.raises(ConfigError, match=message):
+        web_api.matchups(raw)
+
+
+def test_export_matchups_runs_on_the_command_line(tmp_path, cli_matchups):
+    """导出的文件就是命令行的九宫格配置：读回来和页面上的配置相同，跑出来的报告也相同。"""
+    raw = _small_matchups()
+    data = web_api.export_matchups(raw)
+    assert data["filename"] == "1v1_Mega_Froslass_and_1_more.toml"
+    assert data["text"].startswith("# 网页导出的 1v1 九宫格配置（格式见 pogo_sim/matchups.py 开头）")
+    assert "  .venv/bin/python -m tools.run_matchups 1v1_Mega_Froslass_and_1_more.toml" in data["text"]
+    assert "[policy]" not in data["text"]  # 没写策略参数时不写空表
+    path = tmp_path / data["filename"]
+    path.write_text(data["text"], encoding="utf-8")
+    assert load_matchup_config(path) == parse_matchup_config(web_api._with_custom_paths(raw), "网页")
+    prepared, grids, pool_grids = cli_matchups
+    from_file = prepare_matchups(load_matchup_config(path))
+    assert format_report(from_file, run_all(from_file), pool_grids=run_pools(from_file)) == format_report(
+        prepared, grids, pool_grids=pool_grids
+    )
+
+    raw["policy"] = {"bait_shields": False}
+    raw["subject"] = raw["subject"][1:]
+    data = web_api.export_matchups(raw)
+    assert data["filename"] == "1v1_Froslass.toml"
+    assert "\n[policy]\nbait_shields = false\n" in data["text"]
+
+
+def test_export_matchups_checks_the_config():
+    raw = _small_matchups()
+    raw["subject"][1]["label"] = "Mega Froslass"
+    with pytest.raises(ConfigError, match="测试对象里有重名的 Mega Froslass"):
+        web_api.export_matchups(raw)
+
+
+def test_import_matchups_roundtrip():
+    """导入例子配置文件，得到的就是网页的例子配置；导出再导入不变。"""
+    text = MATCHUP_EXAMPLE.read_text(encoding="utf-8")
+    assert web_api.import_matchups({"text": text, "name": MATCHUP_EXAMPLE.name}) == {"config": web_api.example_matchups()}
+    page = _small_matchups()
+    page["policy"] = {"shielding": "when_low", "shield_hp_fraction": 0.3}
+    assert web_api.import_matchups({"text": web_api.export_matchups(page)["text"]}) == {"config": page}
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("league = [", "导入的文件 x.toml：不是合法的 TOML"),
+        ('league = 1500\nseason = "pvpoke"\n', "导入的文件 x.toml：缺少 subject"),
+        (
+            'custom_files = ["experiments/x.toml"]\n' + POOL_CONFIG.replace('custom_files = ["data/custom/mega_froslass.toml"]', ""),
+            "网页只能用 data/custom/ 里的覆盖文件",
+        ),
+    ],
+)
+def test_import_matchups_errors(text, message):
+    with pytest.raises(ConfigError, match=re.escape(message)):
+        web_api.import_matchups({"text": text, "name": "x.toml"})
